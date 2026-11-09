@@ -2,6 +2,10 @@
 
 Default is dry-run: the review is computed and stored, but nothing is posted.
 Use ``--post`` only after shadow validation.
+
+Exit codes follow ``codereview.cli.review_exit_code``: 1 for a failed review,
+2 when ``--post`` ended with a partial failure and no review was posted, and 0
+otherwise. This keeps the script usable as a fail-loud local gate.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from dotenv import load_dotenv
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
+    from codereview.cli import review_exit_code
     from codereview.config import Settings
     from codereview.review.factory import build_pipeline
 
@@ -61,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json_out:
         Path(args.json_out).write_text(text, encoding="utf-8")
     print(text)
-    return 0 if outcome.status != "failed" else 1
+    return review_exit_code(outcome, post=args.post)
 
 
 if __name__ == "__main__":
