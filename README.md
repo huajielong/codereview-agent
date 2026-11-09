@@ -9,30 +9,45 @@ L6 解决的是「General vs Security/Pattern 多专家」的实验问题；这�
 ## 架构
 
 ```
-GitHub webhook ──> FastAPI /webhook (HMAC 校验, 去重)
+GitHub webhook ──> FastAPI /webhook (HMAC 校验、delivery 去重)
                          │
                          ▼
                   SQLite jobs (pending/running/done)
                          │
-                 ┌───────┴────────┐
-                 ▼                ▼
-          ReviewPipeline      worker x N
-                 │
-    ┌────────────┼─────────────┬──────────────┐
-    ▼            ▼             ▼              ▼
- diff 解析/分块  上下文检索     规范/历史       LLM agents
- (L6 parser)   (增量索引)     (policy/history) (general/security/
-    │            │             │              pattern/ensemble)
-    └────────────┴──────┬──────┴──────────────┘
-                        ▼
+                         ▼
+                    worker x N
+                         │
+                         ▼
+                   ReviewPipeline
+                         │
+                         ▼
+                 PR diff 解析 / 分块
+                         │
+        ┌────────────────┴─────────────────┐
+        ▼                                  ▼
+  上下文构建（按需）                   diff chunks（逐块）
+  - 仓库增量索引 + 向量检索
+  - Python 依赖图
+  - policy / 历史 finding
+        │                                  │
+        └──────────────┬───────────────────┘
+                       ▼
+              拼接 prompt ──> LLM agents
+                         (general / security /
+                          pattern / ensemble)
+                       │
+                       ▼
               结构化 findings (FILE/LINE)
-                        │
-                        ▼
-         Publisher (行级评论 + 摘要 + 幂等标记)
-                        │
-                        ▼
+                       │
+                       ▼
+       Publisher（行级评论 + 摘要 + 幂等 marker）
+                       │
+                       ▼
               GitHub Review / dry-run
 ```
+
+说明：diff 分块、上下文检索、依赖图、policy/history 都只是 LLM 的输入，
+不直接产生 findings；review cache 命中时在 `ReviewPipeline` 内直接返回，不调用 LLM。
 
 ## 两种上线方式
 
