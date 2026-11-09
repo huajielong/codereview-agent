@@ -33,8 +33,10 @@ GitHub webhook ──> FastAPI /webhook (HMAC 校验、delivery 去重)
         └──────────────┬───────────────────┘
                        ▼
               拼接 prompt ──> LLM agents
-                         (general / security /
-                          pattern / ensemble)
+                         ├─ general
+                         ├─ security
+                         ├─ pattern
+                         └─ ensemble（security + pattern）
                        │
                        ▼
               结构化 findings (FILE/LINE)
@@ -48,6 +50,7 @@ GitHub webhook ──> FastAPI /webhook (HMAC 校验、delivery 去重)
 
 说明：diff 分块、上下文检索、依赖图、policy/history 都只是 LLM 的输入，
 不直接产生 findings；review cache 命中时在 `ReviewPipeline` 内直接返回，不调用 LLM。
+`ensemble` 会同时调用 security + pattern 两个 agent 并合并结果；其他模式只调用对应 agent。
 
 ## 两种上线方式
 
