@@ -95,9 +95,10 @@ def render_history_section(records: list[dict]) -> str:
         "against the current diff and do not repeat issues that no longer apply):"
     ]
     for record in records:
-        issue = escape_braces(record.get("issue", ""))
+        issue = escape_braces(str(record.get("issue") or ""))
         location = ""
         if record.get("file") and record.get("line"):
-            location = f" ({escape_braces(record['file'])}:{record['line']})"
-        lines.append(f"- {issue}{location} [{escape_braces(record.get('severity', ''))}]")
+            location = f" ({escape_braces(str(record['file']))}:{record['line']})"
+        severity = escape_braces(str(record.get("severity") or ""))
+        lines.append(f"- {issue}{location} [{severity}]")
     return "\n".join(lines)
