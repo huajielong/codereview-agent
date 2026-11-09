@@ -61,7 +61,7 @@ cp .env.example .env          # 填入模型与 GitHub 凭据
 python -m pip install -r requirements.txt
 python -m pip install -e .    # 让 python -m codereview.server 可用
 
-# 131 个离线测试（不调用任何外部接口）
+# 136 个离线测试（不调用任何外部接口）
 python -I -X utf8 -m pytest
 
 # 上线前自检（不联网）：配置、凭据、目录、SQLite、policy/prompt
