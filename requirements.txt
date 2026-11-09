@@ -1,0 +1,13 @@
+# Runtime
+fastapi==0.128.8
+uvicorn[standard]==0.39.0
+httpx==0.28.1
+openai==2.41.1
+chromadb==1.5.9
+cohere==7.3.1
+PyJWT==2.13.0
+cryptography>=42.0
+python-dotenv==1.2.1
+
+# Testing
+pytest==7.4.3

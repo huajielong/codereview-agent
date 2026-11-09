@@ -1,0 +1,26 @@
+services:
+  codereview:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - codereview-data:/app/data
+      - ./policies:/app/policies:ro
+      - ./prompts:/app/prompts:ro
+      # - ./secrets/github-app.pem:/run/secrets/github-app.pem:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  codereview-data:

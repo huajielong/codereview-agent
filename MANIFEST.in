@@ -1,0 +1,6 @@
+include README.md
+include CLAUDE.md
+recursive-include policies *.json
+recursive-include prompts *.md
+recursive-include docs *.md
+recursive-include eval *.jsonl *.md *.json

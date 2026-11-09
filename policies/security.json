@@ -1,0 +1,34 @@
+{
+  "rules": [
+    {
+      "id": "SEC-001",
+      "description": "Use parameterized SQL queries; never interpolate user input into SQL",
+      "severity": "high",
+      "glob": "*.py"
+    },
+    {
+      "id": "SEC-002",
+      "description": "Apply rate limiting to public-facing endpoints",
+      "severity": "medium",
+      "glob": "*.py"
+    },
+    {
+      "id": "SEC-003",
+      "description": "Validate and allowlist redirect targets",
+      "severity": "high",
+      "glob": "*.py"
+    },
+    {
+      "id": "SEC-004",
+      "description": "Never hardcode secrets or credentials",
+      "severity": "high",
+      "glob": "*.py"
+    },
+    {
+      "id": "SEC-005",
+      "description": "Escape user-controlled content before rendering HTML",
+      "severity": "high",
+      "glob": "*.py"
+    }
+  ]
+}
