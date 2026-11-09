@@ -16,6 +16,10 @@ from codereview.errors import ConfigError
 VALID_MODES = ("general", "security", "pattern", "ensemble")
 VALID_SEVERITIES = ("low", "medium", "high")
 
+# Bump this when review behaviour changes in a way that must invalidate
+# persisted review caches (it participates in Settings.fingerprint()).
+ENGINE_VERSION = "2026-11-09.1"
+
 
 def _bool(env: Mapping[str, str], key: str, default: bool) -> bool:
     raw = env.get(key)
@@ -232,6 +236,7 @@ class Settings:
     def fingerprint(self) -> str:
         """Stable hash of behaviour-affecting, non-secret settings."""
         payload = {
+            "engine_version": ENGINE_VERSION,
             "model": self.model,
             "max_tokens": self.max_tokens,
             "mode": self.mode,
