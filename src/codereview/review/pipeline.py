@@ -379,6 +379,8 @@ class ReviewPipeline:
         sections: list[str] = []
         errors: list[str] = []
         stats = None
+        dependency_chars = 0
+        history_chars = 0
 
         embeddings_ready = bool(
             self.settings.context_enabled
@@ -427,6 +429,7 @@ class ReviewPipeline:
                 )
                 if section:
                     sections.append(section)
+                    dependency_chars = len(section)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"dependency: {exc}")
 
@@ -444,9 +447,22 @@ class ReviewPipeline:
                 section = render_history_section(records)
                 if section:
                     sections.append(section)
+                    history_chars = len(section)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"history: {exc}")
 
+        log.info(
+            "review_context_built",
+            extra={
+                "repo": pr.repo,
+                "pr": pr.number,
+                "sections": len(sections),
+                "context_chars": sum(len(section) for section in sections),
+                "dependency_chars": dependency_chars,
+                "history_chars": history_chars,
+                "workspace_ready": root is not None,
+            },
+        )
         return "\n\n".join(sections), errors, stats
 
     def _record_history(self, pr: PRInfo, findings: list[Finding]) -> None:
