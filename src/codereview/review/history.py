@@ -7,14 +7,52 @@ from pathlib import Path
 from codereview.text_utils import escape_braces, token_set
 
 
-class HistoryStore:
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
+def _record_key(record: dict) -> tuple:
+    return (
+        str(record.get("repo", "")).lower(),
+        str(record.get("pr", "")),
+        str(record.get("file", "")),
+        str(record.get("line", "")),
+        str(record.get("issue", "")).strip().lower(),
+    )
 
-    def add(self, record: dict) -> None:
+
+class HistoryStore:
+    def __init__(self, path: str | Path, *, max_records: int = 2000):
+        self.path = Path(path)
+        self.max_records = max(1, max_records)
+
+    def add(self, record: dict) -> bool:
+        """Append one record unless the same finding was already stored."""
+        return self.add_many([record]) == 1
+
+    def add_many(self, records: list[dict]) -> int:
+        """Append new records, dedupe by (repo, pr, file, line, issue), and trim."""
+        if not records:
+            return 0
+        existing = self.all()
+        seen = {_record_key(item) for item in existing}
+        added = 0
+        for record in records:
+            key = _record_key(record)
+            if key in seen:
+                continue
+            seen.add(key)
+            existing.append(record)
+            added += 1
+        if not added:
+            return 0
+        if len(existing) > self.max_records:
+            existing = existing[-self.max_records :]
+        self._write(existing)
+        return added
+
+    def _write(self, records: list[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        temp = self.path.with_name(self.path.name + ".tmp")
+        text = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records)
+        temp.write_text(text, encoding="utf-8")
+        temp.replace(self.path)
 
     def all(self) -> list[dict]:
         if not self.path.exists():
@@ -49,7 +87,10 @@ class HistoryStore:
 def render_history_section(records: list[dict]) -> str:
     if not records:
         return ""
-    lines = ["HISTORICAL REVIEW NOTES (similar findings in this repository):"]
+    lines = [
+        "HISTORICAL REVIEW NOTES (similar findings in this repository; verify each "
+        "against the current diff and do not repeat issues that no longer apply):"
+    ]
     for record in records:
         issue = escape_braces(record.get("issue", ""))
         location = ""
