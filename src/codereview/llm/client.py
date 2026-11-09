@@ -103,9 +103,10 @@ class LLMClient:
             result = run(base_limit)
             # Reasoning models can spend the whole budget on reasoning_content
             # and return an empty body with finish_reason=length. One retry with
-            # a larger budget is cheap compared with silently losing the PR.
+            # a 4x budget (capped at 64K) is cheap compared with silently
+            # losing the PR; 2x was not enough for a long pattern review.
             if not result.content.strip() and result.finish_reason == "length":
-                retry_limit = min(32768, max(base_limit + 1, base_limit * 2))
+                retry_limit = min(65536, max(base_limit + 1, base_limit * 4))
                 if retry_limit > base_limit:
                     log.warning(
                         "llm_length_retry",
