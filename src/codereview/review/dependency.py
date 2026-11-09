@@ -32,6 +32,17 @@ class RepoIndex:
     imports: dict[str, set[str]] = field(default_factory=dict)
 
 
+def _absolute_import_base(relative_path: str, level: int) -> str | None:
+    """Resolve a relative ``ImportFrom`` base against the file's package."""
+    parts = list(Path(relative_path).parts[:-1])
+    if level > 1:
+        trim = level - 1
+        if trim > len(parts):
+            return None
+        parts = parts[: len(parts) - trim]
+    return ".".join(parts) if parts else None
+
+
 def index_repo(
     name: str,
     root: str | Path,
@@ -69,12 +80,20 @@ def index_repo(
                 for alias in node.names:
                     modules.add(alias.name)
                     modules.add(alias.name.split(".")[0])
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                modules.add(node.module)
-                modules.add(node.module.split(".")[0])
-                for alias in node.names:
-                    if alias.name and alias.name != "*":
-                        modules.add(f"{node.module}.{alias.name}")
+            elif isinstance(node, ast.ImportFrom):
+                base: str | None = None
+                if node.level == 0 and node.module:
+                    base = node.module
+                elif node.level > 0:
+                    prefix = _absolute_import_base(relative, node.level)
+                    if prefix:
+                        base = f"{prefix}.{node.module}" if node.module else prefix
+                if base:
+                    modules.add(base)
+                    modules.add(base.split(".")[0])
+                    for alias in node.names:
+                        if alias.name and alias.name != "*":
+                            modules.add(f"{base}.{alias.name}")
         index.imports[relative] = modules
     return index
 
