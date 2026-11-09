@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,8 +21,22 @@ from dotenv import load_dotenv
 
 from codereview.config import Settings
 from codereview.errors import ConfigError
+from codereview.logging_utils import setup_logging
 from codereview.models import severity_at_least
 from codereview.review.factory import build_pipeline
+
+
+def review_exit_code(outcome, *, post: bool) -> int:
+    """Exit code for PR mode.
+
+    A green required check must mean the review was posted. A partial LLM
+    failure that skipped posting is a silent no-review and must fail the check.
+    """
+    if outcome.status == "failed":
+        return 1
+    if post and outcome.status == "completed_with_errors" and not outcome.posted:
+        return 2
+    return 0
 
 
 def _write_json(path: str | None, payload: dict) -> str:
@@ -73,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
             settings = replace(settings, dry_run=False)
         if args.dry_run:
             settings = replace(settings, dry_run=True)
+        # Opt-in: without LOG_LEVEL the CLI stays quiet so stdout remains a
+        # single JSON document for scripts. The Actions workflow sets it.
+        if os.getenv("LOG_LEVEL"):
+            setup_logging(settings.log_level)
         pipeline = build_pipeline(settings)
     except ConfigError as exc:
         print(f"configuration error: {exc}")
@@ -125,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
             force=args.force,
         )
         _write_json(args.json_out, outcome.to_dict())
-        return 0 if outcome.status != "failed" else 1
+        return review_exit_code(outcome, post=args.post)
     finally:
         if getattr(pipeline, "github", None) is not None:
             pipeline.github.close()

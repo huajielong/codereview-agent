@@ -5,6 +5,7 @@ import hashlib
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from codereview.config import Settings
@@ -18,6 +19,7 @@ from codereview.diff.parser import (
 from codereview.llm.reviewers import Reviewer
 from codereview.logging_utils import get_logger
 from codereview.models import Finding, PRInfo, ReviewOutcome, severity_at_least
+from codereview.review.dependency import render_changed_dependency_section
 from codereview.review.history import HistoryStore, render_history_section
 from codereview.review.policy import PolicySet, append_audit, render_policy_section
 from codereview.review.publisher import Publisher
@@ -348,6 +350,13 @@ class ReviewPipeline:
             outcome.errors.extend(publish.errors)
 
             outcome.status = "completed" if not outcome.errors else "completed_with_errors"
+            if (
+                self.settings.history_enabled
+                and not dry_run
+                and pr.number > 0
+                and outcome.status == "completed"
+            ):
+                self._record_history(pr, findings)
             if cache_key and not dry_run and not outcome.errors and pr.head_sha:
                 self.db.set_review_cache(cache_key, outcome)
             return outcome
@@ -370,6 +379,8 @@ class ReviewPipeline:
         sections: list[str] = []
         errors: list[str] = []
         stats = None
+        dependency_chars = 0
+        history_chars = 0
 
         embeddings_ready = bool(
             self.settings.context_enabled
@@ -377,29 +388,50 @@ class ReviewPipeline:
             and self.retriever is not None
             and getattr(self.indexer, "embeddings", None) is not None
         )
-        if embeddings_ready:
-            root = workspace_root
-            if root is None and pr.head_sha and self.workspace is not None:
-                try:
-                    root = self.workspace.ensure(pr.repo, pr.head_sha, installation_id)
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"workspace: {exc}")
-            if root is not None:
-                ref = pr.head_sha or "local"
-                try:
-                    stats = self.indexer.ensure_index(pr.repo, ref, root)
-                    context = self.retriever.context_for_diff(
-                        pr.repo,
-                        ref,
-                        pr.title,
-                        diff,
-                        k=self.settings.context_top_k,
-                        exclude_paths=set(paths),
-                    )
-                    if context:
-                        sections.append(context)
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"index: {exc}")
+        dependency_ready = bool(
+            self.settings.dependency_enabled
+            and any(path.endswith(".py") for path in paths)
+        )
+
+        root = workspace_root
+        if (
+            (embeddings_ready or dependency_ready)
+            and root is None
+            and pr.head_sha
+            and self.workspace is not None
+        ):
+            try:
+                root = self.workspace.ensure(pr.repo, pr.head_sha, installation_id)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"workspace: {exc}")
+
+        if embeddings_ready and root is not None:
+            ref = pr.head_sha or "local"
+            try:
+                stats = self.indexer.ensure_index(pr.repo, ref, root)
+                context = self.retriever.context_for_diff(
+                    pr.repo,
+                    ref,
+                    pr.title,
+                    diff,
+                    k=self.settings.context_top_k,
+                    exclude_paths=set(paths),
+                )
+                if context:
+                    sections.append(context)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"index: {exc}")
+
+        if dependency_ready and root is not None:
+            try:
+                section = render_changed_dependency_section(
+                    root, paths, repo_name=pr.repo
+                )
+                if section:
+                    sections.append(section)
+                    dependency_chars = len(section)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"dependency: {exc}")
 
         if self.settings.policy_enabled and self.policy is not None:
             try:
@@ -415,10 +447,54 @@ class ReviewPipeline:
                 section = render_history_section(records)
                 if section:
                     sections.append(section)
+                    history_chars = len(section)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"history: {exc}")
 
+        log.info(
+            "review_context_built",
+            extra={
+                "repo": pr.repo,
+                "pr": pr.number,
+                "sections": len(sections),
+                "context_chars": sum(len(section) for section in sections),
+                "dependency_chars": dependency_chars,
+                "history_chars": history_chars,
+                "workspace_ready": root is not None,
+            },
+        )
         return "\n\n".join(sections), errors, stats
+
+    def _record_history(self, pr: PRInfo, findings: list[Finding]) -> None:
+        """Persist posted findings so later reviews can retrieve past context."""
+        if self.history is None or not findings:
+            return
+        created_at = datetime.now(timezone.utc).isoformat()
+        records = [
+            {
+                "repo": pr.repo,
+                "pr": pr.number,
+                "head_sha": pr.head_sha,
+                "mode": self.settings.mode,
+                "issue": finding.issue,
+                "file": finding.file or "",
+                "line": finding.line or 0,
+                "severity": finding.severity,
+                "source_agent": finding.source_agent or "",
+                "created_at": created_at,
+            }
+            for finding in findings
+        ]
+        try:
+            added = self.history.add_many(records)
+            log.info(
+                "history_recorded",
+                extra={"repo": pr.repo, "pr": pr.number, "added": added},
+            )
+        except Exception:  # noqa: BLE001 - history is best-effort
+            log.warning(
+                "history_write_failed", extra={"repo": pr.repo, "pr": pr.number}
+            )
 
     def _finish(self, outcome: ReviewOutcome, started: float) -> ReviewOutcome:
         outcome.duration_ms = int((time.monotonic() - started) * 1000)
