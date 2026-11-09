@@ -36,10 +36,22 @@ GitHub webhook ──> FastAPI /webhook (HMAC 校验, 去重)
 
 ## 两种上线方式
 
-- **GitHub Actions（无需服务器）**：把 `docs/github-actions-codereview.yml` 复制到目标仓库，
-  配 3 个 LLM secrets，每个 PR 自动评审。步骤见 `docs/GITHUB-ACTIONS.md`。
+- **GitHub Actions（无需服务器）**：把 `docs/github-actions-codereview.yml` 和
+  `docs/github-actions-codereview-state.yml` 复制到目标仓库，配 3 个 LLM secrets
+  （开启上下文再加 2 个 Cohere secrets），每个 PR 自动评审。默认开启 ensemble、
+  草稿 PR、跨文件上下文、Python 依赖图、历史 finding、空结果摘要和跨 PR 状态缓存。
+  步骤见 `docs/GITHUB-ACTIONS.md`。
 - **Webhook 服务（集中式）**：Docker 部署 + GitHub App + 公网 HTTPS，适合多仓库/组织级。
   步骤见 `docs/PRODUCTION.md`。
+
+## 依赖图与历史 finding
+
+- `REVIEW_DEPENDENCY_ENABLED=true`：索引工作区里的 `*.py`（最多 2000 个文件、单文件 1 MB），
+  把「改动文件 import 了谁 / 谁 import 了改动文件」注入 prompt；支持绝对和相对 import。
+- `REVIEW_HISTORY_ENABLED=true`：成功发布后把 findings 写入 `REVIEW_HISTORY_PATH`，
+  按 `(repo, pr, file, line, issue)` 去重、最多 2000 条；后续审查检索相似历史并注入。
+- `ENGINE_VERSION` 参与缓存指纹；审查行为变更时递增它，避免命中旧 review 缓存。
+- `LOG_LEVEL=INFO` 时 CLI 输出结构化 JSON 日志；不设置时 stdout 保持单个 JSON 文档。
 
 ## 快速开始
 
@@ -49,7 +61,7 @@ cp .env.example .env          # 填入模型与 GitHub 凭据
 python -m pip install -r requirements.txt
 python -m pip install -e .    # 让 python -m codereview.server 可用
 
-# 109 个离线测试（不调用任何外部接口）
+# 131 个离线测试（不调用任何外部接口）
 python -I -X utf8 -m pytest
 
 # 上线前自检（不联网）：配置、凭据、目录、SQLite、policy/prompt
