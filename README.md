@@ -34,6 +34,13 @@ GitHub webhook ──> FastAPI /webhook (HMAC 校验, 去重)
               GitHub Review / dry-run
 ```
 
+## 两种上线方式
+
+- **GitHub Actions（无需服务器）**：把 `docs/github-actions-codereview.yml` 复制到目标仓库，
+  配 3 个 LLM secrets，每个 PR 自动评审。步骤见 `docs/GITHUB-ACTIONS.md`。
+- **Webhook 服务（集中式）**：Docker 部署 + GitHub App + 公网 HTTPS，适合多仓库/组织级。
+  步骤见 `docs/PRODUCTION.md`。
+
 ## 快速开始
 
 ```bash
@@ -243,6 +250,8 @@ scripts/        run_review / record_pr / evaluate / shadow_report / seed_from_l6
 
 ## 文档
 
+- `docs/GITHUB-ACTIONS.md`：免服务器方案：每个 PR 自动跑、只用 Actions Secrets。
+- `docs/github-actions-codereview.yml`：可直接复制到目标仓库的 workflow。
 - `docs/PRODUCTION.md`：GitHub App 权限/事件、shadow 上线、运维与排错。
 - `docs/L6-EXTRACTION.md`：L6 模块到生产模块的映射。
 - `docs/VALIDATION.md`：测试、缓存、合成/真实数据、服务冒烟的全部验证记录。
@@ -250,8 +259,11 @@ scripts/        run_review / record_pr / evaluate / shadow_report / seed_from_l6
 ## 交付检查
 
 - `pytest`：109 个离线测试。
-- **真实发布验证**：临时私有仓库/PR 上发出 2 条 review、3 条 inline comment；第三次运行
-  `cache_hit=true`，没有重复 review。证据见 `eval/reports/real_posting_summary.json`。
+- **真实发布验证（webhook）**：临时私有仓库/PR 上发出 2 条 review、3 条 inline comment；
+  第三次运行 `cache_hit=true`，没有重复 review。证据见 `eval/reports/real_posting_summary.json`。
+- **GitHub Actions 端到端**：临时仓库 + 真实仓库 `local-ai-agent-setup` 均验证成功；
+  真实仓库 PR 自动出现 1 条 review + 2 条 inline comment。证据见
+  `eval/reports/github_actions_smoke.json`、`eval/reports/github_actions_local_repo_smoke.json`。
 - 真实 uvicorn 进程冒烟：`/healthz` 200 → 签名 webhook 202 → job `done` →
   `/readyz` 200 → `/metrics` 有计数 → graceful shutdown。
 - `python -m pip wheel . --no-deps -w dist`：wheel 构建通过；解包到临时 target 后

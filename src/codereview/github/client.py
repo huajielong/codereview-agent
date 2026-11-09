@@ -180,6 +180,18 @@ class GitHubClient:
         )
         return response.text
 
+    def get_compare_diff(
+        self, repo: str, base: str, head: str, installation_id: int | None = None
+    ) -> str:
+        """Diff for a push event: compare two commits with the diff media type."""
+        response = self._request(
+            "GET",
+            f"/repos/{repo}/compare/{base}...{head}",
+            accept="application/vnd.github.v3.diff",
+            installation_id=installation_id,
+        )
+        return response.text
+
     def list_pull_files(
         self, repo: str, number: int, installation_id: int | None = None
     ) -> list[dict]:
