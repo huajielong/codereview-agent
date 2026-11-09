@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from codereview.config import Settings
 from codereview.errors import ConfigError
+from codereview.logging_utils import setup_logging
 from codereview.models import severity_at_least
 from codereview.review.factory import build_pipeline
 
@@ -73,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             settings = replace(settings, dry_run=False)
         if args.dry_run:
             settings = replace(settings, dry_run=True)
+        setup_logging(settings.log_level)
         pipeline = build_pipeline(settings)
     except ConfigError as exc:
         print(f"configuration error: {exc}")
