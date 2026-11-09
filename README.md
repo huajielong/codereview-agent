@@ -38,20 +38,14 @@ GitHub webhook ──> FastAPI /webhook (HMAC 校验, 去重)
 
 - **GitHub Actions（无需服务器）**：把 `docs/github-actions-codereview.yml` 和
   `docs/github-actions-codereview-state.yml` 复制到目标仓库，配 3 个 LLM secrets
-  （开启上下文再加 2 个 Cohere secrets），每个 PR 自动评审。默认开启 ensemble、
-  草稿 PR、跨文件上下文、Python 依赖图、历史 finding、空结果摘要和跨 PR 状态缓存。
+  （开启上下文再加 2 个 Cohere secrets），每个 PR 自动评审。
+  默认开启：ensemble 双专家、草稿 PR、跨文件上下文、Python 依赖图、历史 finding 检索、
+  空结果摘要、SQLite/history 跨 run 缓存、同 PR 新 push 取消旧 run、纯文档 PR 跳过 LLM。
+  `push` 到 `main` 的直推也会做一次审计。配合分支保护（要求 `review` check +
+  conversation resolution）实现「PR 不能秒合并、main 只能人工 merge」。
   步骤见 `docs/GITHUB-ACTIONS.md`。
 - **Webhook 服务（集中式）**：Docker 部署 + GitHub App + 公网 HTTPS，适合多仓库/组织级。
   步骤见 `docs/PRODUCTION.md`。
-
-## 依赖图与历史 finding
-
-- `REVIEW_DEPENDENCY_ENABLED=true`：索引工作区里的 `*.py`（最多 2000 个文件、单文件 1 MB），
-  把「改动文件 import 了谁 / 谁 import 了改动文件」注入 prompt；支持绝对和相对 import。
-- `REVIEW_HISTORY_ENABLED=true`：成功发布后把 findings 写入 `REVIEW_HISTORY_PATH`，
-  按 `(repo, pr, file, line, issue)` 去重、最多 2000 条；后续审查检索相似历史并注入。
-- `ENGINE_VERSION` 参与缓存指纹；审查行为变更时递增它，避免命中旧 review 缓存。
-- `LOG_LEVEL=INFO` 时 CLI 输出结构化 JSON 日志；不设置时 stdout 保持单个 JSON 文档。
 
 ## 快速开始
 
@@ -122,6 +116,13 @@ PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ docker compose up -d --bui
 
 `REVIEW_DRY_RUN=true` 时只计算、存库、返回 payload，不发布。**上线前必须先跑 shadow**。
 
+GitHub Actions 默认用 `ensemble`：security 与 pattern 两个 agent 各跑一次，两者都命中的
+finding 合并保留，另外每个 agent 只保留一条独有的 high/medium finding。成本是单 agent 的
+两倍；本仓库还没有 ensemble 对单 agent 的对照指标，不要把它当成已验证的准确率提升。
+
+`REVIEW_DEPENDENCY_ENABLED=true` 会索引工作区里的 `*.py`（最多 2000 个文件、单文件 1 MB），
+把「改动文件 import 了谁 / 谁 import 了改动文件」注入 prompt；非 Python 仓库不会产生这一节。
+
 大 diff 会分块；只要有一个 chunk 的 LLM 调用失败，默认**整次不发布**
 （`REVIEW_POST_ON_PARTIAL=false`），避免“漏掉的那一块看起来没问题”。每次运行的
 run_id / repo / PR / head_sha / 状态 / finding 数会追加到 `data/audit.jsonl`。
@@ -149,6 +150,19 @@ run_id / repo / PR / head_sha / 状态 / finding 数会追加到 `data/audit.jso
 
 仓库源码通过 GitHub tarball 下载到 `CACHE_DIR/repos/<repo>/<ref>/`，只保留最近
 `REPO_CACHE_KEEP` 个 ref。解压只允许普通文件/目录，拒绝绝对路径、`..`、符号链接和超限大小。
+
+GitHub Actions 里 SQLite（review/embedding 缓存）与 `data/history.jsonl` 通过
+`actions/cache/restore` / `actions/cache/save` 保留；Chroma 每次重建，但未变更的
+chunk 直接命中 SQLite 里的 embedding，不会重复调用 Cohere。缓存 key 含 `run_id` +
+`run_attempt`，`restore-keys` 取最近一份。
+
+GitHub 的 PR cache 只对同一个 PR 可见，所以 workflow 还会把状态作为 artifact 上传；
+`codereview-state.yml` 在默认分支用 `workflow_run` 把它转存成 main 作用域的 cache，
+后续 PR 才能复用 embedding 和历史。这个伴随 workflow 只有在默认分支上才会生效。
+
+历史 finding 检索（`REVIEW_HISTORY_ENABLED=true`）会在每次成功发布后把 findings 追加到
+`REVIEW_HISTORY_PATH`，按 `(repo, pr, file, line, issue)` 去重，最多保留 2000 条；
+后续 PR 用标题 + diff 做关键词检索，把相似的历史 finding 注入 prompt。
 
 ## 行级评论与幂等
 
@@ -270,12 +284,35 @@ scripts/        run_review / record_pr / evaluate / shadow_report / seed_from_l6
 
 ## 交付检查
 
-- `pytest`：109 个离线测试。
+- `pytest`：136 个离线测试。
 - **真实发布验证（webhook）**：临时私有仓库/PR 上发出 2 条 review、3 条 inline comment；
   第三次运行 `cache_hit=true`，没有重复 review。证据见 `eval/reports/real_posting_summary.json`。
 - **GitHub Actions 端到端**：临时仓库 + 真实仓库 `local-ai-agent-setup` 均验证成功；
   真实仓库 PR 自动出现 1 条 review + 2 条 inline comment。证据见
   `eval/reports/github_actions_smoke.json`、`eval/reports/github_actions_local_repo_smoke.json`。
+- **push audit**：第一次运行抓到 workflow 里的真实 shell 命令注入并失败；修复后第二次
+  push audit 成功。证据见 `eval/reports/github_actions_push_audit.json`。
+- **main 分支保护已启用**：必须 PR、必须通过 `review` check、必须解决 AI 评论、
+  enforce admins、禁止 force push/删除。证据见
+  `eval/reports/github_actions_branch_protection.json`。
+- **上下文检索已实测**：PR #3 开启 Cohere 后 `review` check success，索引 5 files /
+  14 chunks；AI 对 Cohere 数据外发和检索内容 prompt injection 提出 2 条 medium 评论。
+  证据见 `eval/reports/github_actions_context_pr.json`。
+- **Actions 全量开关**：PR #4 的 ensemble 运行 success（2 calls / 446 s / 15 chunks），
+  第二次运行复用 5 个文件、只新 embed 2 个 chunk；状态 artifact 237 KB。AI 对
+  docs-only 检测提的 2 条 medium 评论已修复。证据见
+  `eval/reports/github_actions_enable_all.json`。
+- **依赖图与历史 finding 实测**：probe PR #5 用 agent feature branch 运行，
+  `dependency_chars=393`、`history_chars=477`，第二次运行 8/9 文件复用、只新 embed
+  1 个 chunk；历史记录从 3 条增长到 4 条。证据见
+  `eval/reports/github_actions_dependency_history.json`。
+- **发现并修复 silent no-review**：一次 ensemble 运行中 pattern agent 返回
+  `finish_reason=length`，pipeline fail closed 未发布，旧 CLI 仍返回 0，导致 required
+  check 绿着却没有 review。agent PR 的 `review_exit_code()` 现在在 `--post` 模式未发布
+  时返回非零；测试增至 136。
+- **长度重试实测**：2x/32K 仍返回空；probe #6 用 4x/64K + `OPENAI_TIMEOUT=300`
+  成功发布 review `5827083959`（2 条 finding 都是 probe 自己的 feature-branch ref）。
+  证据见 `eval/reports/github_actions_length_retry.json`。
 - 真实 uvicorn 进程冒烟：`/healthz` 200 → 签名 webhook 202 → job `done` →
   `/readyz` 200 → `/metrics` 有计数 → graceful shutdown。
 - `python -m pip wheel . --no-deps -w dist`：wheel 构建通过；解包到临时 target 后
@@ -289,8 +326,18 @@ scripts/        run_review / record_pr / evaluate / shadow_report / seed_from_l6
 ## 已知边界
 
 - 上下文分块对 Python 用 AST；其他语言是整文件/窗口，不做语法理解。
-- 跨仓库依赖图已实现但默认不接入 pipeline（单仓库场景不需要）。
-- 历史 review 检索是关键词重叠，不是语义检索。
+- `REVIEW_DEPENDENCY_ENABLED` 接的是**单仓库内**的 Python import 图；L6 的跨仓库
+  module→repo 图仍保留但未接入 pipeline。
+- 历史 review 检索是关键词重叠，不是语义检索；历史从空开始，需要几次 PR 才有内容。
+  历史 finding 可能把模型引向重复旧问题，prompt 要求逐条对照当前 diff，但没有评测能证明
+  它不会增加误报。
+- ensemble 目前没有与单 agent 的对照评测，只有 L6 的 security/pattern 实验数据；
+  任一 agent 出错都会按 partial failure 整次不发布（fail closed），所以 ensemble 的
+  “无结果”概率比单 agent 高。CLI 在 `--post` 模式下遇到“未发布”的
+  `completed_with_errors` 会返回非零，避免 required check 绿着但没有 review。
+- GitHub Actions 的缓存是“最后写入者获胜”：多个 PR 并发时，各自基于同一份 SQLite
+  快照运行，后保存的会覆盖先保存的新 embedding/history。只影响性能和历史的完整度，
+  不影响 review 的正确性。
 - 大 diff 分块在 L6 fixture 上是 **-2.71pp F1**（只有 1/15 被拆），真实大 PR 仍需验证。
 - 没有 GitHub App manifest 自动注册；需要手动创建 App。
 - 真实发布测试用的临时私有仓库 `huajielong/codereview-agent-smoke` 已在验证后删除
