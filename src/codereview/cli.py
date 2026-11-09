@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -74,7 +75,10 @@ def main(argv: list[str] | None = None) -> int:
             settings = replace(settings, dry_run=False)
         if args.dry_run:
             settings = replace(settings, dry_run=True)
-        setup_logging(settings.log_level)
+        # Opt-in: without LOG_LEVEL the CLI stays quiet so stdout remains a
+        # single JSON document for scripts. The Actions workflow sets it.
+        if os.getenv("LOG_LEVEL"):
+            setup_logging(settings.log_level)
         pipeline = build_pipeline(settings)
     except ConfigError as exc:
         print(f"configuration error: {exc}")
