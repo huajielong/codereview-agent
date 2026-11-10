@@ -104,7 +104,11 @@ class Reviewer:
             template = self.registry.get(agent, repo)
             validate_prompt_template(agent, template)
             values = {
-                "title": escape_braces(pr.get("title", "")),
+                "title": escape_braces(
+                    "<untrusted_title>"
+                    + str(pr.get("title", ""))
+                    + "</untrusted_title>"
+                ),
                 "diff": escape_braces(pr.get("diff", "")),
                 "task_section": escape_braces(task_section),
                 "context_section": escape_braces(context_section),
