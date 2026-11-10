@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from codereview.config import Settings
+from codereview.context.languages import language_for, languages_for_paths, render_language_section
 from codereview.diff.chunker import chunk_diff, render_chunk
 from codereview.diff.parser import (
     changed_paths,
@@ -19,7 +20,10 @@ from codereview.diff.parser import (
 from codereview.llm.reviewers import Reviewer
 from codereview.logging_utils import get_logger
 from codereview.models import Finding, PRInfo, ReviewOutcome, severity_at_least
-from codereview.review.dependency import render_changed_dependency_section
+from codereview.review.dependency import (
+    DEPENDENCY_LANGUAGES,
+    render_changed_dependency_section,
+)
 from codereview.review.history import HistoryStore, render_history_section
 from codereview.review.policy import PolicySet, append_audit, render_policy_section
 from codereview.review.publisher import Publisher
@@ -381,6 +385,11 @@ class ReviewPipeline:
         stats = None
         dependency_chars = 0
         history_chars = 0
+        languages = languages_for_paths(paths)
+
+        language_section = render_language_section(paths)
+        if language_section:
+            sections.append(language_section)
 
         embeddings_ready = bool(
             self.settings.context_enabled
@@ -390,7 +399,7 @@ class ReviewPipeline:
         )
         dependency_ready = bool(
             self.settings.dependency_enabled
-            and any(path.endswith(".py") for path in paths)
+            and any(language_for(path) in DEPENDENCY_LANGUAGES for path in paths)
         )
 
         root = workspace_root
@@ -416,6 +425,7 @@ class ReviewPipeline:
                     diff,
                     k=self.settings.context_top_k,
                     exclude_paths=set(paths),
+                    languages=set(languages),
                 )
                 if context:
                     sections.append(context)
@@ -456,6 +466,7 @@ class ReviewPipeline:
             extra={
                 "repo": pr.repo,
                 "pr": pr.number,
+                "languages": languages,
                 "sections": len(sections),
                 "context_chars": sum(len(section) for section in sections),
                 "dependency_chars": dependency_chars,

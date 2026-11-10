@@ -54,7 +54,12 @@ class VectorStore(Protocol):
         ...
 
     def query(
-        self, collection: str, vector: list[float], k: int, exclude_paths: set[str] | None = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        exclude_paths: set[str] | None = None,
+        languages: set[str] | None = None,
     ) -> list[SearchHit]:
         ...
 
@@ -75,12 +80,19 @@ class MemoryVectorStore:
         self._collections.pop(collection, None)
 
     def query(
-        self, collection: str, vector: list[float], k: int, exclude_paths: set[str] | None = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        exclude_paths: set[str] | None = None,
+        languages: set[str] | None = None,
     ) -> list[SearchHit]:
         exclude = exclude_paths or set()
         hits = []
         for record in self._collections.get(collection, []):
             if record.metadata.get("file_path") in exclude:
+                continue
+            if languages and record.metadata.get("language") not in languages:
                 continue
             hits.append(
                 SearchHit(
@@ -135,24 +147,42 @@ class ChromaVectorStore:
             pass
 
     def query(
-        self, collection: str, vector: list[float], k: int, exclude_paths: set[str] | None = None
+        self,
+        collection: str,
+        vector: list[float],
+        k: int,
+        exclude_paths: set[str] | None = None,
+        languages: set[str] | None = None,
     ) -> list[SearchHit]:
         exclude = exclude_paths or set()
         col = self._client.get_collection(collection)
-        n = max(k * 3, k + len(exclude), 10)
-        results = col.query(
-            query_embeddings=[vector],
-            n_results=n,
-            include=["documents", "metadatas", "distances"],
-        )
+        n = max((k * 6) if languages else (k * 3), k + len(exclude), 10)
+        where = {"language": {"$in": sorted(languages)}} if languages else None
+        try:
+            results = col.query(
+                query_embeddings=[vector],
+                n_results=n,
+                include=["documents", "metadatas", "distances"],
+                where=where,
+            )
+        except Exception:  # noqa: BLE001 - older Chroma/filters
+            # Fall back to an unfiltered query; callers still get a language
+            # preference because this layer applies the post-filter below.
+            results = col.query(
+                query_embeddings=[vector],
+                n_results=n,
+                include=["documents", "metadatas", "distances"],
+            )
         ids = (results.get("ids") or [[]])[0]
         documents = (results.get("documents") or [[]])[0]
         metadatas = (results.get("metadatas") or [[]])[0]
         distances = (results.get("distances") or [[]])[0]
         hits: list[SearchHit] = []
         for index, item_id in enumerate(ids):
-            metadata = metadatas[index] or {}
+            metadata = dict(metadatas[index] or {})
             if metadata.get("file_path") in exclude:
+                continue
+            if languages and metadata.get("language") not in languages:
                 continue
             distance = distances[index] if index < len(distances) else 1.0
             hits.append(

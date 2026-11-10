@@ -11,6 +11,8 @@ Two uses:
 from __future__ import annotations
 
 import ast
+import posixpath
+import re
 import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,8 +22,23 @@ from codereview.text_utils import escape_braces
 EXCLUDED_DIRS = {
     ".git", ".venv", "venv", "__pycache__", "site-packages",
     "node_modules", "build", "dist", ".tox", ".mypy_cache",
+    "vendor", "third_party", "third-party", "external", "deps",
 }
 _BAD_SOURCE = (SyntaxError, UnicodeDecodeError, ValueError, OSError, LookupError)
+
+CPP_EXTENSIONS = {
+    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx",
+}
+JS_EXTENSIONS = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+DEPENDENCY_LANGUAGES = {"python", "c", "cpp", "javascript", "typescript"}
+
+WORKSPACE_MANIFESTS = (
+    "pyproject.toml", "setup.py", "setup.cfg",
+    "package.json", "tsconfig.json",
+    "CMakeLists.txt", "Makefile", "meson.build",
+    "BUILD", "BUILD.bazel",
+    "go.mod", "Cargo.toml",
+)
 
 
 @dataclass
@@ -176,7 +193,7 @@ def dependents_of(importers: dict[str, set[str]], relative_path: str) -> list[st
     return sorted(found)
 
 
-def render_changed_dependency_section(
+def render_python_dependency_section(
     root: str | Path,
     changed_paths: list[str],
     *,
@@ -185,6 +202,10 @@ def render_changed_dependency_section(
     max_related: int = 6,
 ) -> str:
     """Render repository import relationships for the changed Python files."""
+    python_paths = [path for path in changed_paths if path.endswith(".py")]
+    if not python_paths:
+        return ""
+
     index = index_repo(repo_name, root, max_files=max_files)
     if not index.files:
         return ""
@@ -196,9 +217,7 @@ def render_changed_dependency_section(
             module_files.setdefault(candidate, relative)
 
     lines: list[str] = []
-    for relative in sorted(set(changed_paths)):
-        if not relative.endswith(".py"):
-            continue
+    for relative in sorted(set(python_paths)):
         if not module_candidates(relative):
             continue
 
@@ -227,3 +246,308 @@ def render_changed_dependency_section(
         ["IMPACT CONTEXT (repository import relationships for changed files):"]
         + [escape_braces(line) for line in lines]
     )
+
+
+def find_workspace_root(
+    root: str | Path,
+    relative_path: str,
+    manifests: tuple[str, ...] = WORKSPACE_MANIFESTS,
+) -> Path:
+    """Nearest ancestor with a build/package manifest, else the repo root."""
+    root_path = Path(root).resolve()
+    current = (root_path / relative_path).resolve().parent
+    while True:
+        if any((current / manifest).is_file() for manifest in manifests):
+            return current
+        if current == root_path or root_path not in current.parents:
+            return root_path
+        current = current.parent
+
+
+def _workspace_relative(root: Path, relative_path: str) -> str:
+    workspace = find_workspace_root(root, relative_path)
+    try:
+        value = workspace.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return ""
+    return "" if value == "." else value
+
+
+def _iter_language_files(
+    root: str | Path,
+    extensions: set[str],
+    max_files: int,
+    max_file_bytes: int,
+) -> list[tuple[str, Path]]:
+    root_path = Path(root)
+    found: list[tuple[str, Path]] = []
+    for path in sorted(root_path.rglob("*")):
+        if len(found) >= max_files:
+            break
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            relative = path.relative_to(root_path)
+        except OSError:
+            continue
+        if EXCLUDED_DIRS.intersection(relative.parts):
+            continue
+        if path.suffix.lower() not in extensions:
+            continue
+        try:
+            if path.stat().st_size > max_file_bytes:
+                continue
+        except OSError:
+            continue
+        found.append((relative.as_posix(), path))
+    return found
+
+
+def _read_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+_CPP_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+
+
+def _resolve_cpp_include(
+    files: set[str],
+    relative: str,
+    include: str,
+    workspace_relative: str,
+) -> str | None:
+    include_path = posixpath.normpath(include)
+    candidates = [
+        posixpath.normpath(posixpath.join(posixpath.dirname(relative), include)),
+        include_path,
+    ]
+    for prefix in ("", "include", "src", "inc"):
+        base = (
+            posixpath.join(workspace_relative, prefix)
+            if workspace_relative
+            else prefix
+        )
+        candidates.append(posixpath.normpath(posixpath.join(base, include)))
+    for candidate in candidates:
+        if candidate in files:
+            return candidate
+    suffix = "/" + include_path
+    matches = [
+        item for item in files if item == include_path or item.endswith(suffix)
+    ]
+    return sorted(matches, key=len)[0] if matches else None
+
+
+def index_cpp_includes(
+    repo_name: str,
+    root: str | Path,
+    *,
+    max_files: int = 2000,
+    max_file_bytes: int = 1_000_000,
+) -> dict[str, set[str]]:
+    """Map C/C++ file -> resolved local headers it includes."""
+    root_path = Path(root)
+    entries = _iter_language_files(
+        root_path, CPP_EXTENSIONS, max_files, max_file_bytes
+    )
+    files = {relative for relative, _ in entries}
+    includes: dict[str, set[str]] = {relative: set() for relative in files}
+    for relative, path in entries:
+        source = _read_text(path)
+        if source is None:
+            continue
+        workspace_relative = _workspace_relative(root_path, relative)
+        for match in _CPP_INCLUDE_RE.finditer(source):
+            target = _resolve_cpp_include(
+                files, relative, match.group(1), workspace_relative
+            )
+            if target and target != relative:
+                includes[relative].add(target)
+    return includes
+
+
+def render_cpp_dependency_section(
+    root: str | Path,
+    changed_paths: list[str],
+    *,
+    repo_name: str = "repo",
+    max_files: int = 2000,
+    max_related: int = 6,
+) -> str:
+    """Render C/C++ ``#include`` relationships for changed files."""
+    changed = [
+        path
+        for path in changed_paths
+        if Path(path).suffix.lower() in CPP_EXTENSIONS
+    ]
+    if not changed:
+        return ""
+    includes = index_cpp_includes(repo_name, root, max_files=max_files)
+    if not includes:
+        return ""
+
+    included_by: dict[str, set[str]] = {}
+    for source, targets in includes.items():
+        for target in targets:
+            included_by.setdefault(target, set()).add(source)
+
+    lines: list[str] = []
+    for relative in sorted(set(changed)):
+        if relative not in includes:
+            continue
+        imports = sorted(includes[relative])
+        if imports:
+            shown = ", ".join(imports[:max_related])
+            if len(imports) > max_related:
+                shown += f", ... and {len(imports) - max_related} more"
+            lines.append(f"- {relative} includes: {shown}")
+        dependents = sorted(included_by.get(relative, set()))
+        if dependents:
+            shown = ", ".join(dependents[:max_related])
+            if len(dependents) > max_related:
+                shown += f", ... and {len(dependents) - max_related} more"
+            lines.append(f"- {relative} is included by: {shown}")
+
+    if not lines:
+        return ""
+    return "\n".join(
+        ["IMPACT CONTEXT (C/C++ include relationships for changed files):"]
+        + [escape_braces(line) for line in lines]
+    )
+
+
+_JS_IMPORT_RE = re.compile(
+    r"""(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]"""
+)
+_JS_REQUIRE_RE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
+_JS_DYNAMIC_RE = re.compile(r"""import\(\s*['"]([^'"]+)['"]\s*\)""")
+_JS_RESOLVE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def _resolve_js_import(
+    files: set[str], relative: str, spec: str
+) -> str | None:
+    base = posixpath.normpath(
+        posixpath.join(posixpath.dirname(relative), spec)
+    )
+    candidates = [base]
+    suffix = Path(base).suffix.lower()
+    if suffix in JS_EXTENSIONS:
+        stem = base[: -len(suffix)]
+        candidates.extend(stem + ext for ext in _JS_RESOLVE_EXTENSIONS)
+    for extension in _JS_RESOLVE_EXTENSIONS:
+        candidates.append(base + extension)
+        candidates.append(base + "/index" + extension)
+    for candidate in candidates:
+        if candidate in files:
+            return candidate
+    return None
+
+
+def index_js_imports(
+    repo_name: str,
+    root: str | Path,
+    *,
+    max_files: int = 2000,
+    max_file_bytes: int = 1_000_000,
+) -> dict[str, set[str]]:
+    """Map JS/TS file -> resolved relative imports."""
+    entries = _iter_language_files(
+        root, JS_EXTENSIONS, max_files, max_file_bytes
+    )
+    files = {relative for relative, _ in entries}
+    imports: dict[str, set[str]] = {relative: set() for relative in files}
+    for relative, path in entries:
+        source = _read_text(path)
+        if source is None:
+            continue
+        specs: list[str] = []
+        for pattern in (_JS_IMPORT_RE, _JS_REQUIRE_RE, _JS_DYNAMIC_RE):
+            specs.extend(match.group(1) for match in pattern.finditer(source))
+        for spec in specs:
+            if not spec.startswith("."):
+                continue
+            target = _resolve_js_import(files, relative, spec)
+            if target and target != relative:
+                imports[relative].add(target)
+    return imports
+
+
+def render_js_dependency_section(
+    root: str | Path,
+    changed_paths: list[str],
+    *,
+    repo_name: str = "repo",
+    max_files: int = 2000,
+    max_related: int = 6,
+) -> str:
+    """Render JS/TS relative import relationships for changed files."""
+    changed = [
+        path
+        for path in changed_paths
+        if Path(path).suffix.lower() in JS_EXTENSIONS
+    ]
+    if not changed:
+        return ""
+    imports = index_js_imports(repo_name, root, max_files=max_files)
+    if not imports:
+        return ""
+
+    imported_by: dict[str, set[str]] = {}
+    for source, targets in imports.items():
+        for target in targets:
+            imported_by.setdefault(target, set()).add(source)
+
+    lines: list[str] = []
+    for relative in sorted(set(changed)):
+        if relative not in imports:
+            continue
+        targets = sorted(imports[relative])
+        if targets:
+            shown = ", ".join(targets[:max_related])
+            if len(targets) > max_related:
+                shown += f", ... and {len(targets) - max_related} more"
+            lines.append(f"- {relative} imports: {shown}")
+        dependents = sorted(imported_by.get(relative, set()))
+        if dependents:
+            shown = ", ".join(dependents[:max_related])
+            if len(dependents) > max_related:
+                shown += f", ... and {len(dependents) - max_related} more"
+            lines.append(f"- {relative} is imported by: {shown}")
+
+    if not lines:
+        return ""
+    return "\n".join(
+        ["IMPACT CONTEXT (JS/TS import relationships for changed files):"]
+        + [escape_braces(line) for line in lines]
+    )
+
+
+def render_changed_dependency_section(
+    root: str | Path,
+    changed_paths: list[str],
+    *,
+    repo_name: str = "repo",
+    max_files: int = 2000,
+    max_related: int = 6,
+) -> str:
+    """Dispatch dependency rendering to each supported changed language."""
+    sections: list[str] = []
+    for renderer in (
+        render_python_dependency_section,
+        render_cpp_dependency_section,
+        render_js_dependency_section,
+    ):
+        section = renderer(
+            root,
+            changed_paths,
+            repo_name=repo_name,
+            max_files=max_files,
+            max_related=max_related,
+        )
+        if section:
+            sections.append(section)
+    return "\n\n".join(sections)

@@ -27,7 +27,7 @@ GitHub webhook ──> FastAPI /webhook (HMAC 校验、delivery 去重)
         ▼                                  ▼
   上下文构建（按需）                   diff chunks（逐块）
   - 仓库增量索引 + 向量检索
-  - Python 依赖图
+  - Python / C/C++ / JS/TS 依赖图
   - policy / 历史 finding
         │                                  │
         └──────────────┬───────────────────┘
@@ -57,7 +57,7 @@ GitHub webhook ──> FastAPI /webhook (HMAC 校验、delivery 去重)
 - **GitHub Actions（无需服务器）**：把 `docs/github-actions-codereview.yml` 和
   `docs/github-actions-codereview-state.yml` 复制到目标仓库，配 3 个 LLM secrets
   （开启上下文再加 2 个 Cohere secrets），每个 PR 自动评审。
-  默认开启：ensemble 双专家、草稿 PR、跨文件上下文、Python 依赖图、历史 finding 检索、
+  默认开启：ensemble 双专家、草稿 PR、跨文件上下文、Python/C/C++/JS/TS 依赖图、历史 finding 检索、
   空结果摘要、SQLite/history 跨 run 缓存、同 PR 新 push 取消旧 run、纯文档 PR 跳过 LLM。
   `push` 到 `main` 的直推也会做一次审计。配合分支保护（要求 `review` check +
   conversation resolution）实现「PR 不能秒合并、main 只能人工 merge」。
@@ -73,7 +73,7 @@ cp .env.example .env          # 填入模型与 GitHub 凭据
 python -m pip install -r requirements.txt
 python -m pip install -e .    # 让 python -m codereview.server 可用
 
-# 136 个离线测试（不调用任何外部接口）
+# 150 个离线测试（不调用任何外部接口）
 python -I -X utf8 -m pytest
 
 # 上线前自检（不联网）：配置、凭据、目录、SQLite、policy/prompt
@@ -138,8 +138,14 @@ GitHub Actions 默认用 `ensemble`：security 与 pattern 两个 agent 各跑�
 finding 合并保留，另外每个 agent 只保留一条独有的 high/medium finding。成本是单 agent 的
 两倍；本仓库还没有 ensemble 对单 agent 的对照指标，不要把它当成已验证的准确率提升。
 
-`REVIEW_DEPENDENCY_ENABLED=true` 会索引工作区里的 `*.py`（最多 2000 个文件、单文件 1 MB），
-把「改动文件 import 了谁 / 谁 import 了改动文件」注入 prompt；非 Python 仓库不会产生这一节。
+`REVIEW_DEPENDENCY_ENABLED=true` 会索引工作区（最多 2000 个文件、单文件 1 MB），
+按语言注入「改动文件依赖了谁 / 谁依赖了改动文件」：
+
+- Python：`import` / `from ... import`；
+- C/C++：本地 `#include "..."`（系统 `<...>` 忽略）；
+- JS/TS：相对 `import` / `export ... from` / `require` / 动态 `import()`。
+
+外部包、`node_modules`、`vendor`、`third_party` 和系统头文件不建图；不支持的语言不会产生这一节。
 
 大 diff 会分块；只要有一个 chunk 的 LLM 调用失败，默认**整次不发布**
 （`REVIEW_POST_ON_PARTIAL=false`），避免“漏掉的那一块看起来没问题”。每次运行的
@@ -302,7 +308,7 @@ scripts/        run_review / record_pr / evaluate / shadow_report / seed_from_l6
 
 ## 交付检查
 
-- `pytest`：136 个离线测试。
+- `pytest`：150 个离线测试。
 - **真实发布验证（webhook）**：临时私有仓库/PR 上发出 2 条 review、3 条 inline comment；
   第三次运行 `cache_hit=true`，没有重复 review。证据见 `eval/reports/real_posting_summary.json`。
 - **GitHub Actions 端到端**：临时仓库 + 真实仓库 `local-ai-agent-setup` 均验证成功；
@@ -344,8 +350,10 @@ scripts/        run_review / record_pr / evaluate / shadow_report / seed_from_l6
 ## 已知边界
 
 - 上下文分块对 Python 用 AST；其他语言是整文件/窗口，不做语法理解。
-- `REVIEW_DEPENDENCY_ENABLED` 接的是**单仓库内**的 Python import 图；L6 的跨仓库
-  module→repo 图仍保留但未接入 pipeline。
+- `REVIEW_DEPENDENCY_ENABLED` 接的是**单仓库内**的 Python / C/C++ / JS/TS 依赖图：
+  Python 用 AST；C/C++ 只解析本地 `#include "..."`，不处理宏/条件编译/生成头文件；
+  JS/TS 只解析相对 import/require，不处理 `tsconfig` 路径别名。L6 的跨仓库
+  module→repo 图仍保留但未接入 pipeline；跨语言 API/protobuf/gRPC 依赖不在范围内。
 - 历史 review 检索是关键词重叠，不是语义检索；历史从空开始，需要几次 PR 才有内容。
   历史 finding 可能把模型引向重复旧问题，prompt 要求逐条对照当前 diff，但没有评测能证明
   它不会增加误报。

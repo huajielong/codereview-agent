@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from codereview.context.embedding_cache import EmbeddingService
 from codereview.context.index import CHUNKER_VERSION
+from codereview.context.languages import expand_languages, retrieval_groups
 from codereview.context.store import SearchHit, VectorStore, collection_name
 
 
@@ -33,6 +34,7 @@ class ContextRetriever:
         *,
         k: int = 12,
         exclude_paths: set[str] | None = None,
+        languages: set[str] | None = None,
     ) -> list[SearchHit]:
         if not self.embeddings or not ref:
             return []
@@ -40,7 +42,50 @@ class ContextRetriever:
         if not self.store.has(collection):
             return []
         vector = self.embeddings.embed_query(query[:12_000])
-        return self.store.query(collection, vector, k=k, exclude_paths=exclude_paths or set())
+        excluded = exclude_paths or set()
+        if languages:
+            groups = retrieval_groups(languages)
+            if len(groups) > 1:
+                # Reserve a slot per language family so one language cannot
+                # crowd out the others in a mixed PR.
+                per_group = max(1, k // len(groups))
+                hits: list[SearchHit] = []
+                seen: set[str] = set()
+                for group in groups:
+                    for hit in self.store.query(
+                        collection,
+                        vector,
+                        k=per_group,
+                        exclude_paths=excluded,
+                        languages=group,
+                    ):
+                        if hit.id not in seen:
+                            hits.append(hit)
+                            seen.add(hit.id)
+            else:
+                hits = self.store.query(
+                    collection,
+                    vector,
+                    k=k,
+                    exclude_paths=excluded,
+                    languages=set(expand_languages(languages)),
+                )
+                seen = {hit.id for hit in hits}
+            if len(hits) < k:
+                # Same-language chunks are a preference, not a hard filter.
+                for hit in self.store.query(
+                    collection, vector, k=k, exclude_paths=excluded, languages=None
+                ):
+                    if hit.id in seen:
+                        continue
+                    hits.append(hit)
+                    seen.add(hit.id)
+                    if len(hits) >= k:
+                        break
+            return hits[:k]
+        return self.store.query(
+            collection, vector, k=k, exclude_paths=excluded, languages=None
+        )
 
     def context_for_diff(
         self,
@@ -51,9 +96,17 @@ class ContextRetriever:
         *,
         k: int = 12,
         exclude_paths: set[str] | None = None,
+        languages: set[str] | None = None,
     ) -> str:
         query = f"{title}\n\n{diff[:6000]}"
-        hits = self.retrieve(repo, ref, query, k=k, exclude_paths=exclude_paths)
+        hits = self.retrieve(
+            repo,
+            ref,
+            query,
+            k=k,
+            exclude_paths=exclude_paths,
+            languages=languages,
+        )
         return self.render(hits)
 
     def render(self, hits: list[SearchHit]) -> str:
