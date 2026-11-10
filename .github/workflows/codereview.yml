@@ -12,6 +12,11 @@
 # - Do not add paths-ignore: a skipped required check stays "Expected".
 # - Fork PRs do not receive secrets; the fork guard fails closed.
 # - push-audit is a post-merge alert for direct pushes to main.
+#
+# Trust boundary: pull_request runs this workflow definition from the PR merge
+# commit. The base-SHA checkout protects the reviewer code, not this YAML.
+# Treat workflow changes as code requiring human review; on a personal repo
+# only the owner can push same-repo branches.
 
 name: AI code review
 
@@ -128,6 +133,9 @@ jobs:
           REVIEW_HISTORY_ENABLED: "true"
           REVIEW_POST_EMPTY_SUMMARY: "true"
           REVIEW_POST_ON_PARTIAL: "false"
+          # Keep a workflow-sized PR in one chunk; 12K split it and produced
+          # cross-chunk false positives (e.g. "state workflow is missing").
+          REVIEW_MAX_DIFF_CHARS: "30000"
           REVIEW_POLICY_ENABLED: "true"
           REVIEW_POLICY_PATH: ".codereview/policies/security.json"
           REVIEW_PROMPT_DIR: ".codereview/prompts"
@@ -152,17 +160,6 @@ jobs:
             data/codereview.db*
             data/history.jsonl
           key: codereview-state-${{ github.repository }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Upload review state
-        if: always() && env.SAME_REPO == 'true' && steps.scope.outcome == 'success' && steps.scope.outputs.docs_only != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: codereview-state-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            data/codereview.db*
-            data/history.jsonl
-          if-no-files-found: ignore
-          retention-days: 3
 
   push-audit:
     # Direct pushes only. PR merge commits were already reviewed on the PR.
