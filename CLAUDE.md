@@ -97,6 +97,29 @@ python -I -X utf8 scripts/evaluate.py \
   --out eval/reports/real.json --markdown eval/reports/real.md
 ```
 
+多语言评测：
+
+```bash
+# 确定性：依赖 edge-level + 检索 P/R/F1（不调用 LLM）
+python -I -X utf8 scripts/seed_multilang_eval.py
+# 重新生成 eval/workspaces/multilang/ 和 eval/datasets/multilang.jsonl
+python -I -X utf8 scripts/evaluate_multilang.py
+# -> eval/reports/multilang_dependency.json / .md
+
+# Review-level P/R/F1（需要 .env 里的 OPENAI_*；Cohere 可选）
+REVIEW_CONTEXT_ENABLED=true REVIEW_DEPENDENCY_ENABLED=true \
+python -I -X utf8 scripts/evaluate.py \
+  --dataset eval/datasets/multilang.jsonl --runs 3 --match keyword \
+  --review-mode security \
+  --out eval/reports/multilang_review.json \
+  --markdown eval/reports/multilang_review.md
+```
+
+`eval/workspaces/` 被 `.gitignore` 忽略；`seed_multilang_eval.py` 会重新生成
+workspace 和 dataset。`evaluate_multilang.py` 用 lexical-hash proxy，不是 Cohere；
+review-level 用真实模型，baseline 把 `REVIEW_CONTEXT_ENABLED` /
+`REVIEW_DEPENDENCY_ENABLED` 设为 `false`。
+
 `--match hybrid` 会额外用 embedding 做语义匹配；报告收益必须同时给 keyword-only 口径。
 
 ## 架构
@@ -224,4 +247,5 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 - `docs/PRODUCTION.md`：GitHub App、shadow 上线、运维与排错。
 - `docs/VALIDATION.md`：150 测试、缓存、真实发布、Actions 的验证记录。
 - `docs/L6-EXTRACTION.md`：L6 模块到生产模块的映射与行为差异。
+- `docs/MULTILANG-SPEC.md`：多语言 Phase 1/2 规格、TDD 顺序、评测口径与限制。
 - `prompts/README.md`：prompt override 占位符与目录规则。
