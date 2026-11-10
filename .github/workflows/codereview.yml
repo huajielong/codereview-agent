@@ -1,0 +1,238 @@
+# Self-review workflow for the agent repository.
+#
+# The reviewer is checked out from the PR base SHA, never from the PR head.
+# The PR diff is fetched through the GitHub API by the CLI, so a PR cannot
+# execute modified reviewer code with repository secrets.
+#
+# Repository secrets required:
+#   OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+#   COHERE_API_KEY, COHERE_EMBED_MODEL   (REVIEW_CONTEXT_ENABLED=true)
+#
+# Design notes:
+# - Do not add paths-ignore: a skipped required check stays "Expected".
+# - Fork PRs do not receive secrets; the fork guard fails closed.
+# - push-audit is a post-merge alert for direct pushes to main.
+#
+# Trust boundary: pull_request runs this workflow definition from the PR merge
+# commit. The base-SHA checkout protects the reviewer code, not this YAML.
+# Treat workflow changes as code requiring human review; on a personal repo
+# only the owner can push same-repo branches.
+
+name: AI code review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    concurrency:
+      group: codereview-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Fork guard
+        if: env.SAME_REPO != 'true'
+        run: |
+          echo "::error::Fork PRs do not receive repository secrets; review manually."
+          exit 1
+
+      - name: Checkout trusted agent (base)
+        if: env.SAME_REPO == 'true'
+        uses: actions/checkout@v4
+        with:
+          # Reviewer code comes from the PR base, never from the PR head.
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .codereview
+
+      - name: Set up Python
+        if: env.SAME_REPO == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: .codereview/requirements.txt
+
+      - name: Install agent
+        if: env.SAME_REPO == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r .codereview/requirements.txt
+          python -m pip install -e .codereview
+
+      - name: Detect docs-only pull request
+        id: scope
+        if: env.SAME_REPO == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Fail open to a full review: never skip code because the API failed.
+          docs_only=false
+          if changed=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[].filename'); then
+            if [ -n "$changed" ]; then
+              docs_only=true
+              while IFS= read -r file; do
+                [ -z "$file" ] && continue
+                case "$file" in
+                  *.md|*.mdx|*.rst|*.png|*.jpg|*.jpeg|*.gif|*.svg) ;;
+                  *) docs_only=false; break ;;
+                esac
+              done <<< "$changed"
+            fi
+          else
+            echo "gh api failed; running the full review instead of skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+          if [ "$docs_only" = "true" ]; then
+            echo "Docs-only PR: skipping the LLM step; the required check still reports success." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Restore review state
+        if: env.SAME_REPO == 'true' && steps.scope.outputs.docs_only != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            data/codereview.db*
+            data/history.jsonl
+          key: codereview-state-${{ github.repository }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            codereview-state-${{ github.repository }}-${{ github.job }}-
+
+      - name: Review PR
+        if: env.SAME_REPO == 'true' && steps.scope.outputs.docs_only != 'true'
+        env:
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_MAX_TOKENS: "16384"
+          OPENAI_TIMEOUT: "300"
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          COHERE_EMBED_MODEL: ${{ secrets.COHERE_EMBED_MODEL }}
+          LOG_LEVEL: "INFO"
+          REVIEW_MODE: "ensemble"
+          REVIEW_DRY_RUN: "false"
+          REVIEW_DRAFTS: "true"
+          REVIEW_CONTEXT_ENABLED: "true"
+          REVIEW_DEPENDENCY_ENABLED: "true"
+          REVIEW_HISTORY_ENABLED: "true"
+          REVIEW_POST_EMPTY_SUMMARY: "true"
+          REVIEW_POST_ON_PARTIAL: "false"
+          # Keep a workflow-sized PR in one chunk; 12K split it and produced
+          # cross-chunk false positives (e.g. "state workflow is missing").
+          REVIEW_MAX_DIFF_CHARS: "30000"
+          REVIEW_POLICY_ENABLED: "true"
+          REVIEW_POLICY_PATH: ".codereview/policies/security.json"
+          REVIEW_PROMPT_DIR: ".codereview/prompts"
+          DATABASE_PATH: "data/codereview.db"
+          REVIEW_HISTORY_PATH: "data/history.jsonl"
+          CHROMA_PATH: "data/chroma"
+          CACHE_DIR: "data/cache"
+          REVIEW_AUDIT_PATH: "data/audit.jsonl"
+        run: |
+          mkdir -p data
+          touch data/history.jsonl
+          python -I -X utf8 -m codereview.cli \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER" \
+            --post
+
+      - name: Save review state
+        if: always() && env.SAME_REPO == 'true' && steps.scope.outcome == 'success' && steps.scope.outputs.docs_only != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/codereview.db*
+            data/history.jsonl
+          key: codereview-state-${{ github.repository }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  push-audit:
+    # Direct pushes only. PR merge commits were already reviewed on the PR.
+    if: >-
+      github.event_name == 'push' &&
+      !startsWith(github.event.head_commit.message, 'Merge pull request')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: codereview-push-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout agent source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .codereview
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: .codereview/requirements.txt
+
+      - name: Install agent
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r .codereview/requirements.txt
+          python -m pip install -e .codereview
+
+      - name: Audit push
+        env:
+          REPO: ${{ github.repository }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+          PUSH_BRANCH: ${{ github.ref_name }}
+          PUSH_TITLE: ${{ github.event.head_commit.message }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_MAX_TOKENS: "16384"
+          OPENAI_TIMEOUT: "300"
+          LOG_LEVEL: "INFO"
+          REVIEW_MODE: "security"
+          REVIEW_DRY_RUN: "true"
+          REVIEW_CONTEXT_ENABLED: "false"
+          REVIEW_DEPENDENCY_ENABLED: "false"
+          REVIEW_HISTORY_ENABLED: "false"
+          REVIEW_POLICY_ENABLED: "true"
+          REVIEW_POLICY_PATH: ".codereview/policies/security.json"
+          REVIEW_PROMPT_DIR: ".codereview/prompts"
+          DATABASE_PATH: "data/codereview.db"
+          CHROMA_PATH: "data/chroma"
+          CACHE_DIR: "data/cache"
+          REVIEW_AUDIT_PATH: "data/audit.jsonl"
+        run: |
+          set +e
+          python -I -X utf8 -m codereview.cli \
+            --repo "$REPO" \
+            --push \
+            --before "$PUSH_BEFORE" \
+            --after "$PUSH_AFTER" \
+            --branch "$PUSH_BRANCH" \
+            --push-title "$PUSH_TITLE" \
+            --fail-on-severity high \
+            --json-out push-audit.json
+          code=$?
+          echo "## Push audit (exit $code)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat push-audit.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit $code
