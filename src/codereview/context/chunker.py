@@ -12,23 +12,12 @@ import tokenize
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from codereview.context.languages import SUPPORTED_EXTENSIONS, language_for
+
 EXCLUDED_DIRS = {
     ".git", ".venv", "venv", "env", "__pycache__", "site-packages",
     "node_modules", "build", "dist", ".tox", ".mypy_cache", ".ruff_cache",
     ".pytest_cache", "vendor", ".idea", ".vscode",
-}
-
-SUPPORTED_EXTENSIONS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".kt", ".rb",
-    ".php", ".cs", ".rs", ".swift", ".scala", ".sh", ".sql", ".yml", ".yaml",
-}
-
-_LANGUAGE = {
-    ".py": "python", ".js": "javascript", ".jsx": "javascript",
-    ".ts": "typescript", ".tsx": "typescript", ".go": "go", ".java": "java",
-    ".kt": "kotlin", ".rb": "ruby", ".php": "php", ".cs": "csharp",
-    ".rs": "rust", ".swift": "swift", ".scala": "scala", ".sh": "shell",
-    ".sql": "sql", ".yml": "yaml", ".yaml": "yaml",
 }
 
 
@@ -60,10 +49,6 @@ class Chunk:
 
 def blob_sha(source: str) -> str:
     return hashlib.sha256(source.encode("utf-8", errors="replace")).hexdigest()
-
-
-def language_for(path: str) -> str:
-    return _LANGUAGE.get(Path(path).suffix.lower(), "text")
 
 
 def _segment(source_lines: list[str], start: int, end: int) -> str:

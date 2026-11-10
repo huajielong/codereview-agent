@@ -125,7 +125,9 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           COHERE_EMBED_MODEL: ${{ secrets.COHERE_EMBED_MODEL }}
           LOG_LEVEL: "INFO"
-          REVIEW_MODE: "ensemble"
+          # Self-review is security-only: the pattern agent can exhaust the
+          # reasoning budget on large diffs and fail the whole review closed.
+          REVIEW_MODE: "security"
           REVIEW_DRY_RUN: "false"
           REVIEW_DRAFTS: "true"
           REVIEW_CONTEXT_ENABLED: "true"
@@ -138,6 +140,8 @@ jobs:
           REVIEW_MAX_DIFF_CHARS: "30000"
           REVIEW_POLICY_ENABLED: "true"
           REVIEW_POLICY_PATH: ".codereview/policies/security.json"
+          # Synthetic eval fixture contains intentional vulnerabilities.
+          REVIEW_IGNORE_PATHS: "eval/fixtures/multilang_files.json"
           REVIEW_PROMPT_DIR: ".codereview/prompts"
           DATABASE_PATH: "data/codereview.db"
           REVIEW_HISTORY_PATH: "data/history.jsonl"
@@ -214,6 +218,7 @@ jobs:
           REVIEW_HISTORY_ENABLED: "false"
           REVIEW_POLICY_ENABLED: "true"
           REVIEW_POLICY_PATH: ".codereview/policies/security.json"
+          REVIEW_IGNORE_PATHS: "eval/fixtures/multilang_files.json"
           REVIEW_PROMPT_DIR: ".codereview/prompts"
           DATABASE_PATH: "data/codereview.db"
           CHROMA_PATH: "data/chroma"

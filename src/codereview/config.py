@@ -67,6 +67,11 @@ def _repos(env: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(sorted({item.strip().lower() for item in raw.split(",") if item.strip()}))
 
 
+def _paths(env: Mapping[str, str]) -> tuple[str, ...]:
+    raw = env.get("REVIEW_IGNORE_PATHS") or ""
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     # LLM
@@ -126,6 +131,7 @@ class Settings:
     concurrency: int
     log_level: str
     metrics_enabled: bool
+    ignore_paths: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -194,6 +200,7 @@ class Settings:
             concurrency=_int(e, "REVIEW_CONCURRENCY", 2, minimum=1),
             log_level=(_text(e, "LOG_LEVEL", "INFO") or "INFO").upper(),
             metrics_enabled=_bool(e, "METRICS_ENABLED", True),
+            ignore_paths=_paths(e),
         )
 
     # --- capability checks -------------------------------------------------
@@ -251,6 +258,7 @@ class Settings:
             "policy_enabled": self.policy_enabled,
             "history_enabled": self.history_enabled,
             "dependency_enabled": self.dependency_enabled,
+            "ignore_paths": self.ignore_paths,
             "cohere_embed_model": self.cohere_embed_model,
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)

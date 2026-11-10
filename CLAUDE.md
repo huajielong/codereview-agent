@@ -34,7 +34,7 @@ python -I -X utf8 -m pytest tests/test_pipeline.py -q
 python -I -X utf8 -m pytest tests/test_pipeline.py::test_review_pr_dry_run_end_to_end -q
 ```
 
-当前 136 个离线测试；不访问 GitHub/LLM/Cohere。新增测试沿用 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub`，不要把真实 key 或网络调用带进测试。
+当前 150 个离线测试；不访问 GitHub/LLM/Cohere。新增测试沿用 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub`，不要把真实 key 或网络调用带进测试。
 
 ### 编译与构建
 
@@ -97,6 +97,30 @@ python -I -X utf8 scripts/evaluate.py \
   --out eval/reports/real.json --markdown eval/reports/real.md
 ```
 
+多语言评测：
+
+```bash
+# 重新生成 eval/workspaces/multilang/ 和 eval/datasets/multilang.jsonl
+python -I -X utf8 scripts/seed_multilang_eval.py
+# 确定性：依赖 edge-level + 检索 P/R/F1（不调用 LLM）
+python -I -X utf8 scripts/evaluate_multilang.py
+# -> eval/reports/multilang_dependency.md（JSON 本地生成，不提交）
+
+# Review-level P/R/F1（需要 .env 里的 OPENAI_*；Cohere 可选）
+REVIEW_CONTEXT_ENABLED=true REVIEW_DEPENDENCY_ENABLED=true \
+python -I -X utf8 scripts/evaluate.py \
+  --dataset eval/datasets/multilang.jsonl --runs 3 --match keyword \
+  --review-mode security \
+  --out eval/reports/multilang_review.json \
+  --markdown eval/reports/multilang_review.md
+```
+
+`eval/workspaces/` 被 `.gitignore` 忽略；`seed_multilang_eval.py` 会重新生成
+workspace 和 dataset。评测 JSON 报告也是本地生成物（已加入 `.gitignore`），
+仓库只提交 `.md` 摘要。`evaluate_multilang.py` 用 lexical-hash proxy，不是 Cohere；
+review-level 用真实模型，baseline 把 `REVIEW_CONTEXT_ENABLED` /
+`REVIEW_DEPENDENCY_ENABLED` 设为 `false`。
+
 `--match hybrid` 会额外用 embedding 做语义匹配；报告收益必须同时给 keyword-only 口径。
 
 ## 架构
@@ -114,7 +138,7 @@ python -I -X utf8 scripts/evaluate.py \
 3. `_build_context`（best-effort，每节失败只记 error）：
    - 需要 context 或 dependency 时，`RepoWorkspace.ensure` 下载 tarball 到 `CACHE_DIR/repos/<repo>/<ref>`；
    - `RepoIndexer.ensure_index` 增量索引；`ContextRetriever.context_for_diff` 检索，排除本次改动文件；
-   - `render_changed_dependency_section` 注入单仓库 Python import 关系；
+   - `render_changed_dependency_section` 注入单仓库 Python / C/C++ / JS/TS 依赖关系；
    - `render_policy_section` 注入 policy；
    - `render_history_section` 注入历史 finding。
 4. `chunk_diff` 按 `REVIEW_MAX_DIFF_CHARS` 切块；每块调 `Reviewer.review`，传入 context / task_context。
@@ -213,7 +237,7 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 9. **单副本**：SQLite 是一个连接 + 锁，Chroma 是进程内共享。同一 `DATABASE_PATH`/`CHROMA_PATH` 不要跑多个副本；同一 repo+ref 的并发建索引把 `REVIEW_CONCURRENCY` 设为 1。
 10. **测试不联网**：新增测试用 `FakeLLM`/`FakeGitHub`，不要依赖真实 key、真实 GitHub 或 Cohere。
 11. **指标口径**：默认 keyword；`--match hybrid` 必须同时报告 keyword-only。L6 出现过两种口径方向相反；不要只报 hybrid。
-12. **dependency/history 是增强，不是保证**：dependency 只支持单仓库 Python import 图；history 是关键词重叠检索，从空开始，可能把模型引向旧问题。不要把它们写成“已验证提升准确率”。
+12. **dependency/history 是增强，不是保证**：dependency 支持单仓库 Python import、C/C++ 本地 `#include "..."`、JS/TS 相对 import/require；C/C++ 不处理宏/条件编译，JS/TS 不处理 `tsconfig` 别名，跨语言 API 依赖不在范围内。history 是关键词重叠检索，从空开始，可能把模型引向旧问题。不要把它们写成“已验证提升准确率”。
 13. **Chroma 不可用时回退内存索引**（`factory._make_store`），这时跨进程不共享；日志里会有 `chroma_unavailable_fallback_memory`。
 14. **ensemble 没有对照评测**；`README.md` 和 `docs/VALIDATION.md` 的数字是单次运行/小样本，不要当 SLA。
 
@@ -222,6 +246,7 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 - `README.md`：完整功能、GitHub App 配置、缓存/发布/评测细节。
 - `docs/GITHUB-ACTIONS.md`：免服务器落地方案与 secrets。
 - `docs/PRODUCTION.md`：GitHub App、shadow 上线、运维与排错。
-- `docs/VALIDATION.md`：136 测试、缓存、真实发布、Actions 的验证记录。
+- `docs/VALIDATION.md`：150 测试、缓存、真实发布、Actions 的验证记录。
 - `docs/L6-EXTRACTION.md`：L6 模块到生产模块的映射与行为差异。
+- `docs/MULTILANG-SPEC.md`：多语言 Phase 1/2 规格、TDD 顺序、评测口径与限制。
 - `prompts/README.md`：prompt override 占位符与目录规则。

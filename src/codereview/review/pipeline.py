@@ -1,6 +1,7 @@
 """End-to-end review orchestration."""
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import time
@@ -9,6 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from codereview.config import Settings
+from codereview.context.languages import (
+    DEPENDENCY_LANGUAGES,
+    language_for,
+    languages_for_paths,
+    render_language_section,
+)
 from codereview.diff.chunker import chunk_diff, render_chunk
 from codereview.diff.parser import (
     changed_paths,
@@ -49,6 +56,16 @@ def _cache_key(
     }
     blob = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _path_ignored(path: str | None, patterns: tuple[str, ...]) -> bool:
+    normalized = (path or "").replace("\\", "/")
+    for pattern in patterns:
+        if fnmatch.fnmatch(normalized, pattern):
+            return True
+        if pattern.startswith("**/") and fnmatch.fnmatch(normalized, pattern[3:]):
+            return True
+    return False
 
 
 def deduplicate_findings(findings: list[Finding]) -> list[Finding]:
@@ -310,6 +327,12 @@ class ReviewPipeline:
                 outcome.completion_tokens += call.completion_tokens
 
             findings = deduplicate_findings(findings)
+            if self.settings.ignore_paths:
+                findings = [
+                    finding
+                    for finding in findings
+                    if not _path_ignored(finding.file, self.settings.ignore_paths)
+                ]
             findings = [
                 finding
                 for finding in findings
@@ -381,6 +404,11 @@ class ReviewPipeline:
         stats = None
         dependency_chars = 0
         history_chars = 0
+        languages = languages_for_paths(paths)
+
+        language_section = render_language_section(paths)
+        if language_section:
+            sections.append(language_section)
 
         embeddings_ready = bool(
             self.settings.context_enabled
@@ -390,7 +418,7 @@ class ReviewPipeline:
         )
         dependency_ready = bool(
             self.settings.dependency_enabled
-            and any(path.endswith(".py") for path in paths)
+            and any(language_for(path) in DEPENDENCY_LANGUAGES for path in paths)
         )
 
         root = workspace_root
@@ -416,6 +444,7 @@ class ReviewPipeline:
                     diff,
                     k=self.settings.context_top_k,
                     exclude_paths=set(paths),
+                    languages=set(languages),
                 )
                 if context:
                     sections.append(context)
@@ -456,6 +485,7 @@ class ReviewPipeline:
             extra={
                 "repo": pr.repo,
                 "pr": pr.number,
+                "languages": languages,
                 "sections": len(sections),
                 "context_chars": sum(len(section) for section in sections),
                 "dependency_chars": dependency_chars,
