@@ -69,7 +69,17 @@ class ContextRetriever:
             text = hit.text
             body = text.split("\n\n", 1)[1] if "\n\n" in text else text
             block = f"{header}\n{body}"
-            if used + len(block) > self.max_chars:
+            remaining = self.max_chars - used
+            if remaining <= 0:
+                break
+            if len(block) > remaining:
+                # A single AST class can exceed max_chars. Returning an empty
+                # context because the top hit is large silently disables
+                # retrieval; keep a truncated first block instead.
+                marker = "\n...[truncated]"
+                if remaining <= len(marker):
+                    break
+                parts.append(block[: remaining - len(marker)] + marker)
                 break
             parts.append(block)
             used += len(block)
