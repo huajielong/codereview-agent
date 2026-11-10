@@ -10,6 +10,8 @@ secrets/
 data/
 !data/.gitkeep
 eval/workspaces/
+# Generated eval output: commit the .md summaries, not machine reports
+eval/reports/multilang_*.json
 logs/
 *.db
 *.db-wal

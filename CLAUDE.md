@@ -104,7 +104,7 @@ python -I -X utf8 scripts/evaluate.py \
 python -I -X utf8 scripts/seed_multilang_eval.py
 # 重新生成 eval/workspaces/multilang/ 和 eval/datasets/multilang.jsonl
 python -I -X utf8 scripts/evaluate_multilang.py
-# -> eval/reports/multilang_dependency.json / .md
+# -> eval/reports/multilang_dependency.md（JSON 本地生成，不提交）
 
 # Review-level P/R/F1（需要 .env 里的 OPENAI_*；Cohere 可选）
 REVIEW_CONTEXT_ENABLED=true REVIEW_DEPENDENCY_ENABLED=true \
@@ -116,7 +116,8 @@ python -I -X utf8 scripts/evaluate.py \
 ```
 
 `eval/workspaces/` 被 `.gitignore` 忽略；`seed_multilang_eval.py` 会重新生成
-workspace 和 dataset。`evaluate_multilang.py` 用 lexical-hash proxy，不是 Cohere；
+workspace 和 dataset。评测 JSON 报告也是本地生成物（已加入 `.gitignore`），
+仓库只提交 `.md` 摘要。`evaluate_multilang.py` 用 lexical-hash proxy，不是 Cohere；
 review-level 用真实模型，baseline 把 `REVIEW_CONTEXT_ENABLED` /
 `REVIEW_DEPENDENCY_ENABLED` 设为 `false`。
 

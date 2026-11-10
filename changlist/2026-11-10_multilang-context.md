@@ -88,7 +88,7 @@ python -I -X utf8 -m pytest -q
 
 ### 4.1 依赖图 edge-level（确定性）
 
-`scripts/evaluate_multilang.py`、`eval/reports/multilang_dependency.json`：
+`scripts/evaluate_multilang.py`、`eval/reports/multilang_dependency.md`：
 
 - 7 cases / 15 edges
 - **Precision 1.0000 / Recall 1.0000 / F1 1.0000**
@@ -118,9 +118,11 @@ unfiltered 0.7059，说明指标对 k 敏感。
 （line F1 +14.85pp，actionable +2.39pp）。一次 run 在 `multilang#5`（C++ buffer）
 多报一条，导致 precision 0.9697。报告：
 
-- `eval/reports/multilang_review.json` / `.md`
-- `eval/reports/multilang_review_baseline.json` / `.md`
-- `eval/reports/multilang_review_1run.json` / `.md`（单次对照）
+- `eval/reports/multilang_review.md`
+- `eval/reports/multilang_review_baseline.md`
+- `eval/reports/multilang_review_1run.md`（单次对照）
+
+JSON 报告由评测脚本本地生成，已加入 `.gitignore`；仓库只提交 `.md` 摘要。
 
 ### 4.4 数据集
 
@@ -132,10 +134,8 @@ unfiltered 0.7059，说明指标对 k 敏感。
 ## 5. 文档
 
 - `docs/MULTILANG-SPEC.md`（新增）：SDD 规格、阶段、TDD 流程、评测口径、风险
-- `docs/VALIDATION.md`：新增第 11 节，记录测试与评测
 - `README.md`：架构图、dependency 支持范围、已知边界
 - `CLAUDE.md`：pipeline/依赖说明、边界、测试计数 150
-- `docs/GITHUB-ACTIONS.md`：`REVIEW_DEPENDENCY_ENABLED` 说明更新
 
 ## 6. 限制
 
