@@ -1,0 +1,89 @@
+# Companion to codereview.yml.
+#
+# GitHub caches created by a pull_request run are scoped to that PR's merge ref
+# and are not visible to sibling PRs. This workflow runs on the default branch
+# after "AI code review" finishes, downloads the PR run's state artifact, and
+# saves it under a main-scoped cache key. Later PRs restore that key, so
+# embeddings and historical findings accumulate across PRs.
+#
+# This workflow only takes effect once it is on the default branch.
+
+name: AI code review state
+
+on:
+  workflow_run:
+    workflows: ["AI code review"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  persist:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: codereview-state
+      cancel-in-progress: false
+    steps:
+      - name: Download review state
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: codereview-state-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: data
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+
+      - name: Validate review state
+        id: validate
+        if: steps.download.outcome == 'success'
+        env:
+          REQUIRED_TABLES: "embeddings,chunk_cache,posted_reviews"
+        run: |
+          python3 -I - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sqlite3
+
+          db = pathlib.Path("data/codereview.db")
+          if not db.exists():
+              raise SystemExit("missing data/codereview.db")
+
+          con = sqlite3.connect(db)
+          tables = {row[0] for row in con.execute(
+              "SELECT name FROM sqlite_master WHERE type='table'"
+          )}
+          required = {
+              name.strip()
+              for name in os.environ.get("REQUIRED_TABLES", "").split(",")
+              if name.strip()
+          }
+          missing = required - tables
+          if missing:
+              raise SystemExit(f"missing tables: {sorted(missing)}")
+
+          history = pathlib.Path("data/history.jsonl")
+          if history.exists():
+              for line in history.read_text(encoding="utf-8").splitlines():
+                  if line.strip():
+                      json.loads(line)
+          print("review state validation ok")
+          PY
+
+      - name: Save main-scoped review state
+        if: steps.download.outcome == 'success' && steps.validate.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            data/codereview.db*
+            data/history.jsonl
+          key: codereview-state-${{ github.repository }}-review-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
