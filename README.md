@@ -120,7 +120,8 @@ PAT 仅作为单仓库本地调试的降级方案（`GITHUB_TOKEN`）。
 
 `REVIEW_DRY_RUN=true` 时只计算、存库、返回 payload，不发布。上线前应先跑
 shadow。`REVIEW_IGNORE_PATHS` 接收逗号分隔的 glob，用于过滤测试 fixture 等路径的
-findings；本仓库自审用它跳过 `eval/fixtures/**` 和 `eval/datasets/**`。
+findings；本仓库自审只跳过 `eval/fixtures/multilang_files.json`，不忽略其他
+fixture 或 dataset 路径。
 
 ## 上下文与依赖
 

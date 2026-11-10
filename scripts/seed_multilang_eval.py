@@ -189,8 +189,11 @@ PRS = [
 
 
 def main() -> int:
+    workspace = WORKSPACE.resolve()
     for relative, source in FILES.items():
-        path = WORKSPACE / relative
+        path = (workspace / relative).resolve()
+        if not path.is_relative_to(workspace):
+            raise SystemExit(f"fixture path escapes workspace: {relative!r}")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
 

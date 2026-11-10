@@ -50,8 +50,20 @@ class RepoIndex:
 
 
 def _clean_context_value(value: str, limit: int = 300) -> str:
-    """Keep generated dependency context to one printable, bounded token."""
-    return " ".join(str(value).split())[:limit]
+    """Render repository-controlled identifiers as inert path-like text.
+
+    Only word characters and path punctuation survive; spaces, quotes,
+    newlines and other instruction-shaped characters become ``_``.
+    """
+    cleaned = re.sub(r"[^\w./\\,-]+", "_", str(value), flags=re.UNICODE)
+    return cleaned[:limit]
+
+
+def _clean_context_list(values: list[str], max_related: int) -> str:
+    shown = ", ".join(_clean_context_value(value) for value in values[:max_related])
+    if len(values) > max_related:
+        shown += f", ... and {len(values) - max_related} more"
+    return shown
 
 
 def _absolute_import_base(relative_path: str, level: int) -> str | None:
@@ -234,23 +246,16 @@ def render_python_dependency_section(
             if target and target != relative:
                 imports.add(target)
         if imports:
-            ordered = sorted(imports)
-            shown = ", ".join(ordered[:max_related])
-            if len(ordered) > max_related:
-                shown += f", ... and {len(ordered) - max_related} more"
+            shown = _clean_context_list(sorted(imports), max_related)
             lines.append(
-                f"- {_clean_context_value(relative)} imports: "
-                f"{_clean_context_value(shown)}"
+                f"- {_clean_context_value(relative)} imports: {shown}"
             )
 
         dependents = dependents_of(importers, relative)
         if dependents:
-            shown = ", ".join(dependents[:max_related])
-            if len(dependents) > max_related:
-                shown += f", ... and {len(dependents) - max_related} more"
+            shown = _clean_context_list(dependents, max_related)
             lines.append(
-                f"- {_clean_context_value(relative)} is imported by: "
-                f"{_clean_context_value(shown)}"
+                f"- {_clean_context_value(relative)} is imported by: {shown}"
             )
 
     if not lines:
@@ -422,21 +427,15 @@ def render_cpp_dependency_section(
             continue
         imports = sorted(includes[relative])
         if imports:
-            shown = ", ".join(imports[:max_related])
-            if len(imports) > max_related:
-                shown += f", ... and {len(imports) - max_related} more"
+            shown = _clean_context_list(imports, max_related)
             lines.append(
-                f"- {_clean_context_value(relative)} includes: "
-                f"{_clean_context_value(shown)}"
+                f"- {_clean_context_value(relative)} includes: {shown}"
             )
         dependents = sorted(included_by.get(relative, set()))
         if dependents:
-            shown = ", ".join(dependents[:max_related])
-            if len(dependents) > max_related:
-                shown += f", ... and {len(dependents) - max_related} more"
+            shown = _clean_context_list(dependents, max_related)
             lines.append(
-                f"- {_clean_context_value(relative)} is included by: "
-                f"{_clean_context_value(shown)}"
+                f"- {_clean_context_value(relative)} is included by: {shown}"
             )
 
     if not lines:
@@ -539,21 +538,15 @@ def render_js_dependency_section(
             continue
         targets = sorted(imports[relative])
         if targets:
-            shown = ", ".join(targets[:max_related])
-            if len(targets) > max_related:
-                shown += f", ... and {len(targets) - max_related} more"
+            shown = _clean_context_list(targets, max_related)
             lines.append(
-                f"- {_clean_context_value(relative)} imports: "
-                f"{_clean_context_value(shown)}"
+                f"- {_clean_context_value(relative)} imports: {shown}"
             )
         dependents = sorted(imported_by.get(relative, set()))
         if dependents:
-            shown = ", ".join(dependents[:max_related])
-            if len(dependents) > max_related:
-                shown += f", ... and {len(dependents) - max_related} more"
+            shown = _clean_context_list(dependents, max_related)
             lines.append(
-                f"- {_clean_context_value(relative)} is imported by: "
-                f"{_clean_context_value(shown)}"
+                f"- {_clean_context_value(relative)} is imported by: {shown}"
             )
 
     if not lines:

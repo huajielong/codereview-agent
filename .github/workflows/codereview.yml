@@ -140,8 +140,8 @@ jobs:
           REVIEW_MAX_DIFF_CHARS: "30000"
           REVIEW_POLICY_ENABLED: "true"
           REVIEW_POLICY_PATH: ".codereview/policies/security.json"
-          # Synthetic eval fixtures contain intentional vulnerabilities.
-          REVIEW_IGNORE_PATHS: "eval/fixtures/**,eval/datasets/**"
+          # Synthetic eval fixture contains intentional vulnerabilities.
+          REVIEW_IGNORE_PATHS: "eval/fixtures/multilang_files.json"
           REVIEW_PROMPT_DIR: ".codereview/prompts"
           DATABASE_PATH: "data/codereview.db"
           REVIEW_HISTORY_PATH: "data/history.jsonl"
@@ -218,7 +218,7 @@ jobs:
           REVIEW_HISTORY_ENABLED: "false"
           REVIEW_POLICY_ENABLED: "true"
           REVIEW_POLICY_PATH: ".codereview/policies/security.json"
-          REVIEW_IGNORE_PATHS: "eval/fixtures/**,eval/datasets/**"
+          REVIEW_IGNORE_PATHS: "eval/fixtures/multilang_files.json"
           REVIEW_PROMPT_DIR: ".codereview/prompts"
           DATABASE_PATH: "data/codereview.db"
           CHROMA_PATH: "data/chroma"
