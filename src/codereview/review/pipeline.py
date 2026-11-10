@@ -1,6 +1,7 @@
 """End-to-end review orchestration."""
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import time
@@ -55,6 +56,16 @@ def _cache_key(
     }
     blob = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _path_ignored(path: str | None, patterns: tuple[str, ...]) -> bool:
+    normalized = (path or "").replace("\\", "/")
+    for pattern in patterns:
+        if fnmatch.fnmatch(normalized, pattern):
+            return True
+        if pattern.startswith("**/") and fnmatch.fnmatch(normalized, pattern[3:]):
+            return True
+    return False
 
 
 def deduplicate_findings(findings: list[Finding]) -> list[Finding]:
@@ -316,6 +327,12 @@ class ReviewPipeline:
                 outcome.completion_tokens += call.completion_tokens
 
             findings = deduplicate_findings(findings)
+            if self.settings.ignore_paths:
+                findings = [
+                    finding
+                    for finding in findings
+                    if not _path_ignored(finding.file, self.settings.ignore_paths)
+                ]
             findings = [
                 finding
                 for finding in findings

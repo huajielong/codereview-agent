@@ -119,7 +119,8 @@ PAT 仅作为单仓库本地调试的降级方案（`GITHUB_TOKEN`）。
 | `ensemble` | 2 | Security + Pattern，合并结果；成本翻倍 |
 
 `REVIEW_DRY_RUN=true` 时只计算、存库、返回 payload，不发布。上线前应先跑
-shadow。
+shadow。`REVIEW_IGNORE_PATHS` 接收逗号分隔的 glob，用于过滤测试 fixture 等路径的
+findings；本仓库自审用它跳过 `eval/fixtures/**` 和 `eval/datasets/**`。
 
 ## 上下文与依赖
 
