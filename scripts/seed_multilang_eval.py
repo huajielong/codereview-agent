@@ -9,6 +9,7 @@ set, not a benchmark of real-world accuracy.
 from __future__ import annotations
 
 import difflib
+import json
 import sys
 from pathlib import Path
 
@@ -21,117 +22,21 @@ from codereview.evaluation.dataset import DatasetPR, ExpectedFinding, save_datas
 WORKSPACE = ROOT / "eval" / "workspaces" / "multilang"
 DATASET = ROOT / "eval" / "datasets" / "multilang.jsonl"
 
-SAFE_DB = """import sqlite3
-
-DB = sqlite3.connect("app.db")
-
-def query_user(name):
-    return DB.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchall()
-"""
-
-VULN_DB = """import sqlite3
-
-DB = sqlite3.connect("app.db")
-
-def query_user(name):
-    return DB.execute(f"SELECT * FROM users WHERE name = '{name}'").fetchall()
-"""
-
-SAFE_RENDER = """import { fetchUser } from './api';
-
-export async function renderUser(id: string) {
-  const user = await fetchUser(id);
-  document.getElementById('user')!.textContent = user.name;
-}
-"""
-
-VULN_RENDER = """import { fetchUser } from './api';
-
-export async function renderUser(id: string) {
-  const user = await fetchUser(id);
-  document.getElementById('user')!.innerHTML = `<b>${user.name}</b>`;
-}
-"""
-
-SAFE_BUFFER = """#pragma once
-#include <cstring>
-
-inline void copy_name(char *dst, const char *src) {
-    strncpy(dst, src, 15);
-    dst[15] = '\\0';
-}
-"""
-
-VULN_BUFFER = """#pragma once
-#include <cstring>
-
-inline void copy_name(char *dst, const char *src) {
-    strcpy(dst, src);
-}
-"""
-
-RUNNER = """import subprocess
-
-def run(cmd):
-    return subprocess.run(cmd, shell=True)
-"""
-
-AUTH = """const API_TOKEN = "sk-live-hardcoded";
-
-export function parse(input: string) {
-  return eval(input);
-}
-"""
-
-LOG_CPP = """#include <cstdio>
-
-void log_msg(const char *msg) {
-    printf(msg);
-}
-"""
-
-FILES = {
-    "pyproject.toml": "[project]\nname = \"multilang-fixture\"\n",
-    "backend/__init__.py": "",
-    "backend/app.py": (
-        "from backend.db import query_user\n\n"
-        "def handler(name):\n"
-        "    return query_user(name)\n"
-    ),
-    "backend/db.py": VULN_DB,
-    "backend/runner.py": RUNNER,
-    "web/package.json": "{}\n",
-    "web/tsconfig.json": "{}\n",
-    "web/src/api.ts": (
-        "export async function fetchUser(id: string) {\n"
-        "  return fetch(`/api/users/${id}`).then((response) => response.json());\n"
-        "}\n"
-    ),
-    "web/src/render.ts": VULN_RENDER,
-    "web/src/app.ts": (
-        "import { renderUser } from './render';\n\n"
-        "renderUser(new URLSearchParams(location.search).get('id') || '1');\n"
-    ),
-    "web/src/auth.ts": AUTH,
-    "native/CMakeLists.txt": "project(multilang_fixture)\n",
-    "native/include/buffer.h": VULN_BUFFER,
-    "native/src/main.cpp": (
-        '#include "../include/buffer.h"\n\n'
-        "int main(int argc, char **argv) {\n"
-        "    char buf[16];\n"
-        "    copy_name(buf, argv[1]);\n"
-        "    return 0;\n"
-        "}\n"
-    ),
-    "native/src/parser.cpp": (
-        '#include "../include/buffer.h"\n\n'
-        "void parse(const char *s) {\n"
-        "    char buf[8];\n"
-        "    copy_name(buf, s);\n"
-        "}\n"
-    ),
-    "native/src/log.cpp": LOG_CPP,
-}
+SOURCES = json.loads(
+    (ROOT / "eval" / "fixtures" / "multilang_files.json").read_text(
+        encoding="utf-8"
+    )
+)
+SAFE_DB = SOURCES["SAFE_DB"]
+VULN_DB = SOURCES["VULN_DB"]
+SAFE_RENDER = SOURCES["SAFE_RENDER"]
+VULN_RENDER = SOURCES["VULN_RENDER"]
+SAFE_BUFFER = SOURCES["SAFE_BUFFER"]
+VULN_BUFFER = SOURCES["VULN_BUFFER"]
+RUNNER = SOURCES["RUNNER"]
+AUTH = SOURCES["AUTH"]
+LOG_CPP = SOURCES["LOG_CPP"]
+FILES = SOURCES["FILES"]
 
 
 def _diff(path: str, before: str, after: str) -> str:
