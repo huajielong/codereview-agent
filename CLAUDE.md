@@ -100,9 +100,9 @@ python -I -X utf8 scripts/evaluate.py \
 多语言评测：
 
 ```bash
-# 确定性：依赖 edge-level + 检索 P/R/F1（不调用 LLM）
-python -I -X utf8 scripts/seed_multilang_eval.py
 # 重新生成 eval/workspaces/multilang/ 和 eval/datasets/multilang.jsonl
+python -I -X utf8 scripts/seed_multilang_eval.py
+# 确定性：依赖 edge-level + 检索 P/R/F1（不调用 LLM）
 python -I -X utf8 scripts/evaluate_multilang.py
 # -> eval/reports/multilang_dependency.md（JSON 本地生成，不提交）
 

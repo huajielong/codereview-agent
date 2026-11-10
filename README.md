@@ -105,9 +105,9 @@ PAT 仅作为单仓库本地调试的降级方案（`GITHUB_TOKEN`）。
 
 仓库内的 `.github/workflows/codereview.yml` 只用于本仓库的 PR 自审：它从 PR
 的 base SHA 检出 reviewer 代码，通过 GitHub API 拉取 diff，配置
-`OPENAI_*` / `COHERE_*` secrets 后发布 review。`push` 到 `main` 时另有
-`push-audit`。它不是一个可直接复制到任意目标仓库的通用模板；目标仓库需要
-自行提供 workflow，并指定本仓库作为 agent 源。
+`OPENAI_*` / `COHERE_*` secrets 后发布 review。自审使用 `security` 模式；
+`push` 到 `main` 时另有 `push-audit`。它不是一个可直接复制到任意目标仓库的
+通用模板；目标仓库需要自行提供 workflow，并指定本仓库作为 agent 源。
 
 ## 评审模式
 

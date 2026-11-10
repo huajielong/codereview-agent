@@ -125,7 +125,9 @@ jobs:
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
           COHERE_EMBED_MODEL: ${{ secrets.COHERE_EMBED_MODEL }}
           LOG_LEVEL: "INFO"
-          REVIEW_MODE: "ensemble"
+          # Self-review is security-only: the pattern agent can exhaust the
+          # reasoning budget on large diffs and fail the whole review closed.
+          REVIEW_MODE: "security"
           REVIEW_DRY_RUN: "false"
           REVIEW_DRAFTS: "true"
           REVIEW_CONTEXT_ENABLED: "true"
