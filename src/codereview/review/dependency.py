@@ -11,6 +11,7 @@ Two uses:
 from __future__ import annotations
 
 import ast
+import os
 import posixpath
 import re
 import tokenize
@@ -280,27 +281,36 @@ def _iter_language_files(
     max_files: int,
     max_file_bytes: int,
 ) -> list[tuple[str, Path]]:
+    """Collect supported files without materializing the whole tree.
+
+    ``os.walk`` lets us prune excluded directories and stop as soon as
+    ``max_files`` is reached; sorting each directory keeps the result stable
+    without sorting every path in a large repository.
+    """
     root_path = Path(root)
     found: list[tuple[str, Path]] = []
-    for path in sorted(root_path.rglob("*")):
-        if len(found) >= max_files:
-            break
-        try:
-            if path.is_symlink() or not path.is_file():
+    for current, dirnames, filenames in os.walk(root_path):
+        dirnames[:] = sorted(
+            name for name in dirnames if name not in EXCLUDED_DIRS
+        )
+        for name in sorted(filenames):
+            if len(found) >= max_files:
+                return found
+            path = Path(current) / name
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                relative = path.relative_to(root_path)
+            except OSError:
                 continue
-            relative = path.relative_to(root_path)
-        except OSError:
-            continue
-        if EXCLUDED_DIRS.intersection(relative.parts):
-            continue
-        if path.suffix.lower() not in extensions:
-            continue
-        try:
-            if path.stat().st_size > max_file_bytes:
+            if path.suffix.lower() not in extensions:
                 continue
-        except OSError:
-            continue
-        found.append((relative.as_posix(), path))
+            try:
+                if path.stat().st_size > max_file_bytes:
+                    continue
+            except OSError:
+                continue
+            found.append((relative.as_posix(), path))
     return found
 
 
