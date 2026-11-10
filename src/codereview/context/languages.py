@@ -38,6 +38,21 @@ EXTENSION_LANGUAGES = {
 
 SUPPORTED_EXTENSIONS = frozenset(EXTENSION_LANGUAGES)
 
+CPP_EXTENSIONS = frozenset(
+    extension
+    for extension, language in EXTENSION_LANGUAGES.items()
+    if language in ("c", "cpp")
+)
+JS_EXTENSIONS = frozenset(
+    extension
+    for extension, language in EXTENSION_LANGUAGES.items()
+    if language in ("javascript", "typescript")
+)
+DEPENDENCY_LANGUAGES = frozenset(
+    {"python"}
+    | {EXTENSION_LANGUAGES[extension] for extension in CPP_EXTENSIONS | JS_EXTENSIONS}
+)
+
 
 LANGUAGE_GROUPS = {
     "c": ("c", "cpp"),

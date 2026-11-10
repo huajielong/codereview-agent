@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from codereview.config import Settings
-from codereview.context.languages import language_for, languages_for_paths, render_language_section
+from codereview.context.languages import (
+    DEPENDENCY_LANGUAGES,
+    language_for,
+    languages_for_paths,
+    render_language_section,
+)
 from codereview.diff.chunker import chunk_diff, render_chunk
 from codereview.diff.parser import (
     changed_paths,
@@ -20,10 +25,7 @@ from codereview.diff.parser import (
 from codereview.llm.reviewers import Reviewer
 from codereview.logging_utils import get_logger
 from codereview.models import Finding, PRInfo, ReviewOutcome, severity_at_least
-from codereview.review.dependency import (
-    DEPENDENCY_LANGUAGES,
-    render_changed_dependency_section,
-)
+from codereview.review.dependency import render_changed_dependency_section
 from codereview.review.history import HistoryStore, render_history_section
 from codereview.review.policy import PolicySet, append_audit, render_policy_section
 from codereview.review.publisher import Publisher

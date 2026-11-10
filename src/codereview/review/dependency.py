@@ -17,6 +17,7 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from codereview.context.languages import CPP_EXTENSIONS, JS_EXTENSIONS
 from codereview.text_utils import escape_braces
 
 EXCLUDED_DIRS = {
@@ -25,12 +26,6 @@ EXCLUDED_DIRS = {
     "vendor", "third_party", "third-party", "external", "deps",
 }
 _BAD_SOURCE = (SyntaxError, UnicodeDecodeError, ValueError, OSError, LookupError)
-
-CPP_EXTENSIONS = {
-    ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx",
-}
-JS_EXTENSIONS = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
-DEPENDENCY_LANGUAGES = {"python", "c", "cpp", "javascript", "typescript"}
 
 WORKSPACE_MANIFESTS = (
     "pyproject.toml", "setup.py", "setup.cfg",
