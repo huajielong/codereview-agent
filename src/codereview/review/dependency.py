@@ -49,6 +49,11 @@ class RepoIndex:
     imports: dict[str, set[str]] = field(default_factory=dict)
 
 
+def _clean_context_value(value: str, limit: int = 300) -> str:
+    """Keep generated dependency context to one printable, bounded token."""
+    return " ".join(str(value).split())[:limit]
+
+
 def _absolute_import_base(relative_path: str, level: int) -> str | None:
     """Resolve a relative ``ImportFrom`` base against the file's package."""
     parts = list(Path(relative_path).parts[:-1])
@@ -233,14 +238,20 @@ def render_python_dependency_section(
             shown = ", ".join(ordered[:max_related])
             if len(ordered) > max_related:
                 shown += f", ... and {len(ordered) - max_related} more"
-            lines.append(f"- {relative} imports: {shown}")
+            lines.append(
+                f"- {_clean_context_value(relative)} imports: "
+                f"{_clean_context_value(shown)}"
+            )
 
         dependents = dependents_of(importers, relative)
         if dependents:
             shown = ", ".join(dependents[:max_related])
             if len(dependents) > max_related:
                 shown += f", ... and {len(dependents) - max_related} more"
-            lines.append(f"- {relative} is imported by: {shown}")
+            lines.append(
+                f"- {_clean_context_value(relative)} is imported by: "
+                f"{_clean_context_value(shown)}"
+            )
 
     if not lines:
         return ""
@@ -414,13 +425,19 @@ def render_cpp_dependency_section(
             shown = ", ".join(imports[:max_related])
             if len(imports) > max_related:
                 shown += f", ... and {len(imports) - max_related} more"
-            lines.append(f"- {relative} includes: {shown}")
+            lines.append(
+                f"- {_clean_context_value(relative)} includes: "
+                f"{_clean_context_value(shown)}"
+            )
         dependents = sorted(included_by.get(relative, set()))
         if dependents:
             shown = ", ".join(dependents[:max_related])
             if len(dependents) > max_related:
                 shown += f", ... and {len(dependents) - max_related} more"
-            lines.append(f"- {relative} is included by: {shown}")
+            lines.append(
+                f"- {_clean_context_value(relative)} is included by: "
+                f"{_clean_context_value(shown)}"
+            )
 
     if not lines:
         return ""
@@ -431,11 +448,12 @@ def render_cpp_dependency_section(
 
 
 _JS_IMPORT_RE = re.compile(
-    r"""(?:import|export)\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]"""
+    r"""(?:import|export)\s+(?:[^'";\n]*?\s+from\s+)?['"]([^'"\n]+)['"]"""
 )
-_JS_REQUIRE_RE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
-_JS_DYNAMIC_RE = re.compile(r"""import\(\s*['"]([^'"]+)['"]\s*\)""")
+_JS_REQUIRE_RE = re.compile(r"""require\(\s*['"]([^'"\n]+)['"]\s*\)""")
+_JS_DYNAMIC_RE = re.compile(r"""import\(\s*['"]([^'"\n]+)['"]\s*\)""")
 _JS_RESOLVE_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_JS_MAX_LINE = 4096
 
 
 def _resolve_js_import(
@@ -475,6 +493,9 @@ def index_js_imports(
         source = _read_text(path)
         if source is None:
             continue
+        # Bound each line before regex evaluation: a generated 1 MB single-line
+        # file must not make the import patterns scan quadratically.
+        source = "\n".join(line[:_JS_MAX_LINE] for line in source.splitlines())
         specs: list[str] = []
         for pattern in (_JS_IMPORT_RE, _JS_REQUIRE_RE, _JS_DYNAMIC_RE):
             specs.extend(match.group(1) for match in pattern.finditer(source))
@@ -521,13 +542,19 @@ def render_js_dependency_section(
             shown = ", ".join(targets[:max_related])
             if len(targets) > max_related:
                 shown += f", ... and {len(targets) - max_related} more"
-            lines.append(f"- {relative} imports: {shown}")
+            lines.append(
+                f"- {_clean_context_value(relative)} imports: "
+                f"{_clean_context_value(shown)}"
+            )
         dependents = sorted(imported_by.get(relative, set()))
         if dependents:
             shown = ", ".join(dependents[:max_related])
             if len(dependents) > max_related:
                 shown += f", ... and {len(dependents) - max_related} more"
-            lines.append(f"- {relative} is imported by: {shown}")
+            lines.append(
+                f"- {_clean_context_value(relative)} is imported by: "
+                f"{_clean_context_value(shown)}"
+            )
 
     if not lines:
         return ""
