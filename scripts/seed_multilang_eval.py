@@ -9,7 +9,6 @@ set, not a benchmark of real-world accuracy.
 from __future__ import annotations
 
 import difflib
-import json
 import sys
 from pathlib import Path
 
@@ -17,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from codereview.diff.parser import normalize_diff, parse_unified_diff
+from codereview.evaluation.dataset import DatasetPR, ExpectedFinding, save_dataset
 
 WORKSPACE = ROOT / "eval" / "workspaces" / "multilang"
 DATASET = ROOT / "eval" / "datasets" / "multilang.jsonl"
@@ -301,25 +301,24 @@ def main() -> int:
         if not parsed:
             raise SystemExit(f"{pr['id']}: generated diff did not parse")
         records.append(
-            {
-                "id": pr["id"],
-                "repo": "fixture/multilang",
-                "number": pr["number"],
-                "head_sha": "fixture",
-                "title": pr["title"],
-                "body": pr["body"],
-                "diff": diff,
-                "expected": pr["expected"],
-                "source": "synthetic-multilang",
-                "labeled": True,
-                "meta": {"workspace": "eval/workspaces/multilang"},
-            }
+            DatasetPR(
+                id=pr["id"],
+                repo="fixture/multilang",
+                number=pr["number"],
+                head_sha="fixture",
+                title=pr["title"],
+                body=pr["body"],
+                diff=diff,
+                expected=[
+                    ExpectedFinding.from_value(item) for item in pr["expected"]
+                ],
+                source="synthetic-multilang",
+                labeled=True,
+                meta={"workspace": "eval/workspaces/multilang"},
+            )
         )
 
-    DATASET.write_text(
-        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
-        encoding="utf-8",
-    )
+    save_dataset(DATASET, records)
     print(f"wrote {len(records)} records to {DATASET}")
     print(f"workspace: {WORKSPACE}")
     return 0

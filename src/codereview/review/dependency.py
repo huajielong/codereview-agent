@@ -17,7 +17,11 @@ import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from codereview.context.languages import CPP_EXTENSIONS, JS_EXTENSIONS
+from codereview.context.languages import (
+    CPP_EXTENSIONS,
+    JS_EXTENSIONS,
+    language_for,
+)
 from codereview.text_utils import escape_braces
 
 EXCLUDED_DIRS = {
@@ -197,7 +201,9 @@ def render_python_dependency_section(
     max_related: int = 6,
 ) -> str:
     """Render repository import relationships for the changed Python files."""
-    python_paths = [path for path in changed_paths if path.endswith(".py")]
+    python_paths = [
+        path for path in changed_paths if language_for(path) == "python"
+    ]
     if not python_paths:
         return ""
 
