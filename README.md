@@ -48,7 +48,7 @@ GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITL
 
 ## 验证状态（2026-11-24）
 
-- 离线：98 个测试通过；`compileall`、wheel 构建通过。
+- 离线：100 个测试通过；`compileall`、wheel 构建通过。
 - GitHub：PR #7 的 `review` self-review check 在提交 `700ef7e` 上通过（16m42s）；
   `push-audit` 在 PR 上按设计 skipped。本文档更新会触发一次新的 review check。
 - GitLab：`huajielong/codereview-agent` MR !1 已合并，`main` 的 verify pipeline

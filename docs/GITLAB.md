@@ -106,8 +106,8 @@ include:
 
 不要把 `ref` 指向可变分支后直接执行：那等于把上游最新提交变成你 CI 里的代码。
 模板默认 `CODEREVIEW_AGENT_REF=v0.1.0`，只接受版本 tag（`vX.Y.Z`）或完整的
-40 位 commit SHA；使用 `main`/`master`/`develop` 等分支必须显式设
-`CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。`include.ref` 与
+40 位 commit SHA；值不能包含空白或换行。使用 `main`/`master`/`develop` 等分支
+必须显式设 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。`include.ref` 与
 `CODEREVIEW_AGENT_REF` 要指向同一个 tag 或 commit。
 
 ### 3.2 目标仓库需要配置的变量

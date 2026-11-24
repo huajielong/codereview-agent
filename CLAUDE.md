@@ -44,7 +44,7 @@ python -I -X utf8 -m pytest tests/test_publisher.py -q
 python -I -X utf8 -m pytest tests/test_factory.py -q
 ```
 
-当前 98 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
+当前 100 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub` / `FakeGitLab`，不要把真实 key
 或网络调用带进测试。
 

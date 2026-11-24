@@ -73,6 +73,7 @@ variables:
   before_script:
     - mkdir -p .codereview-state .cache/pip
     - if [ -z "$CODEREVIEW_AGENT_CLONE_TOKEN" ]; then echo "CODEREVIEW_AGENT_CLONE_TOKEN is required (read_repository deploy token)"; exit 1; fi
+    - if ! git check-ref-format --branch "$CODEREVIEW_AGENT_REF" >/dev/null 2>&1; then echo "CODEREVIEW_AGENT_REF must be a single valid tag/SHA ref"; exit 1; fi
     - if [ "${CODEREVIEW_ALLOW_MUTABLE_AGENT_REF:-false}" != "true" ]; then printf '%s' "$CODEREVIEW_AGENT_REF" | grep -Eq '^(v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?|[0-9a-fA-F]{40})$' || { echo "CODEREVIEW_AGENT_REF must be a version tag (vX.Y.Z) or a full 40-char commit SHA; set CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true to use a branch"; exit 1; }; fi
     - SERVER="${CI_SERVER_URL}"
     - SCHEME="${SERVER%%://*}"
