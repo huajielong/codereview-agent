@@ -86,20 +86,23 @@ def ensure_project(
     namespace, _, name = project_path.rpartition("/")
     if not namespace:
         raise SystemExit("project must be namespace/name")
-    namespace_id = resolve_namespace(client, user, namespace)
-    payload = _check(
-        client.post(
-            "/projects",
-            json={
-                "name": name,
-                "path": name,
-                "namespace_id": namespace_id,
-                "visibility": visibility,
-                "initialize_with_readme": False,
-            },
-        ),
-        "POST /projects",
-    )
+    body = {
+        "name": name,
+        "path": name,
+        "visibility": visibility,
+        "initialize_with_readme": False,
+    }
+    # GitLab.com currently rejects namespace_id for a personal namespace with
+    # "undefined method 'organization_id' for nil"; omitting it lets the API
+    # default to the authenticated user's namespace.
+    if namespace.lower() != str(user.get("username", "")).lower():
+        body["namespace_id"] = resolve_namespace(client, user, namespace)
+    payload = _check(client.post("/projects", json=body), "POST /projects")
+    actual = str(payload.get("path_with_namespace") or "")
+    if actual.lower() != project_path.lower():
+        raise SystemExit(
+            f"project was created at {actual!r}, expected {project_path!r}"
+        )
     print(f"created project {project_path} (visibility={visibility})")
     return payload
 
@@ -235,6 +238,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="create a read_repository deploy token for cloning the agent repo",
     )
+    parser.add_argument(
+        "--deploy-token-name",
+        default="codereview-agent-clone",
+        help="name for the read_repository deploy token",
+    )
     parser.add_argument("--yes", action="store_true", help="skip confirmation")
     args = parser.parse_args(argv)
 
@@ -285,7 +293,9 @@ def main(argv: list[str] | None = None) -> int:
 
         deploy = None
         if args.create_deploy_token:
-            deploy = create_deploy_token(client, project["id"])
+            deploy = create_deploy_token(
+                client, project["id"], args.deploy_token_name
+            )
             if deploy:
                 extra.setdefault("CODEREVIEW_AGENT_CLONE_USER", deploy.get("username", "oauth2"))
                 extra.setdefault("CODEREVIEW_AGENT_CLONE_TOKEN", deploy.get("token", ""))
