@@ -16,6 +16,10 @@ logs/
 *.db
 *.db-wal
 *.db-shm
+# GitLab CI job state and review output
+.codereview-state/
+codereview.json
+push-audit.json
 
 # Python
 __pycache__/

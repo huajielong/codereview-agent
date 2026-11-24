@@ -17,6 +17,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from codereview.config import Settings
 from codereview.github.webhook import parse_pull_request_event, should_review, verify_signature
+from codereview.gitlab.webhook import (
+    delivery_id as gitlab_delivery_id,
+    parse_merge_request_event,
+    verify_request as verify_gitlab_request,
+)
 from codereview.logging_utils import get_logger, setup_logging
 from codereview.review.factory import build_pipeline
 from codereview.server.metrics import Metrics
@@ -139,6 +144,8 @@ def create_app(
 
     @app.post("/webhook")
     async def webhook(request: Request):
+        if not cfg.github_webhook_secret:
+            raise HTTPException(404, "GitHub webhook is not configured")
         body = await request.body()
         signature = request.headers.get("X-Hub-Signature-256")
         secret = cfg.github_webhook_secret or ""
@@ -190,6 +197,65 @@ def create_app(
         app.state.metrics.inc("codereview_webhook_received_total")
         return JSONResponse(
             {"status": "queued", "delivery": delivery_id}, status_code=202
+        )
+
+    @app.post("/webhook/gitlab")
+    async def webhook_gitlab(request: Request):
+        if not cfg.has_gitlab_webhook():
+            raise HTTPException(404, "GitLab webhook is not configured")
+        body = await request.body()
+        ok, verify_reason = verify_gitlab_request(cfg, request.headers, body)
+        if not ok:
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total",
+                {"reason": f"gitlab_{verify_reason}"},
+            )
+            raise HTTPException(401, f"invalid GitLab webhook {verify_reason}")
+
+        event_name = request.headers.get("X-Gitlab-Event", "")
+        delivery = gitlab_delivery_id(request.headers, body)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise HTTPException(400, "invalid JSON")
+
+        database = app.state.db
+        if not database.record_delivery(delivery, event_name or "gitlab"):
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total", {"reason": "duplicate"}
+            )
+            return JSONResponse({"status": "duplicate"}, status_code=202)
+
+        event = parse_merge_request_event(
+            event_name, payload, delivery, cfg.gitlab_base_url
+        )
+        if event is None:
+            return JSONResponse({"status": "ignored"}, status_code=202)
+
+        decision, reason = should_review(event, cfg)
+        if not decision:
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total", {"reason": reason}
+            )
+            return JSONResponse({"status": "skipped", "reason": reason}, status_code=202)
+
+        if not cfg.dry_run and not cfg.has_gitlab_write():
+            raise HTTPException(503, "GitLab write credentials are not configured")
+        if not getattr(app.state, "pipeline", None):
+            raise HTTPException(503, "pipeline is not ready")
+
+        database.create_job(
+            delivery,
+            event.repo,
+            event.number,
+            None,
+            event.action,
+            event.head_sha,
+        )
+        await app.state.queue.put(delivery)
+        app.state.metrics.inc("codereview_webhook_received_total")
+        return JSONResponse(
+            {"status": "queued", "delivery": delivery}, status_code=202
         )
 
     return app

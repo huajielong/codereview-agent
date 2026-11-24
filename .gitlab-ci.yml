@@ -1,0 +1,31 @@
+# Self-check for the agent repository. Target repositories use
+# ci/gitlab-codereview.yml (or the copy in docs/gitlab-codereview.example.yml).
+stages:
+  - verify
+
+variables:
+  CODEREVIEW_PYTHON_IMAGE: python:3.11
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+verify:
+  stage: verify
+  image: $CODEREVIEW_PYTHON_IMAGE
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  cache:
+    key: "codereview-agent-pip-$CI_JOB_IMAGE"
+    paths:
+      - .cache/pip/
+    policy: pull-push
+  script:
+    - python -m pip install -r requirements.txt
+    - python -m compileall -q src scripts tests
+    - python -I -X utf8 -m pytest -q
+    - python -m pip wheel . --no-deps -w dist
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - dist/*.whl

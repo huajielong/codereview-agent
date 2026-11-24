@@ -1,10 +1,10 @@
 # codereview-agent
 
-从 DeepLearning.AI L6 实验抽取的 GitHub PR 安全评审服务。它拉取 PR diff，按
-security / pattern / general / ensemble 模式调用 LLM，生成带 `file:line` 的
-findings，并通过 GitHub Review 回写。仓库同时包含 webhook 服务、GitHub Actions
-自审 workflow、仓库上下文检索、依赖图和缓存。相对 L6 notebook，这里补上了 GitHub
-接入、评论回写、缓存和可重复的多语言评测。
+从 DeepLearning.AI L6 实验抽取的 **GitHub / GitLab** 代码评审服务。它拉取 PR/MR
+diff，按 security / pattern / general / ensemble 模式调用 LLM，生成带 `file:line`
+的 findings，并通过 GitHub Review 或 GitLab note + discussion 回写。仓库同时包含
+webhook 服务、GitHub Actions / GitLab CI 接入、仓库上下文检索、依赖图和缓存。
+相对 L6 notebook，这里补上了双平台接入、评论回写、缓存和可重复的多语言评测。
 
 当前状态：内部试点项目，未声明许可证。
 
@@ -21,23 +21,35 @@ python -m pip install -e .
 # 离线自检：配置、凭据、目录、SQLite、policy/prompt
 python -I -X utf8 scripts/check_production.py
 
-# 只评审、不发布
+# 只评审、不发布（GitHub）
 python -I -X utf8 scripts/run_review.py --repo owner/repo --pr 42
 
 # 确认结果后再发布
 python -I -X utf8 scripts/run_review.py --repo owner/repo --pr 42 --post
+
+# GitLab（--pr 是 MR IID）
+python -I -X utf8 scripts/run_review.py \
+  --provider gitlab --repo group/project --pr 42
+python -I -X utf8 scripts/run_review.py \
+  --provider gitlab --repo group/project --pr 42 --post
 ```
 
-`scripts/check_production.py` 不联网；缺少必填配置时会报错。`--post` 才会写回
-GitHub。
+`scripts/check_production.py` 不联网；缺少必填配置时会报错。用
+`--provider github|gitlab|both` 选择要校验的平台。`--post` 才会写回远程。
 
-本仓库不包含 `tests/`，直接运行 `pytest` 不会收集到测试。测试套件保留在实验
-目录，未随本仓库发布。
+仓库自带离线测试（不访问 GitHub/GitLab/LLM）：
+
+```bash
+python -I -X utf8 -m pytest -q
+```
+
+GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITLAB.md)。
 
 ## 架构
 
 ```text
 GitHub webhook ──> FastAPI /webhook（HMAC、delivery 去重）
+GitLab webhook ──> FastAPI /webhook/gitlab（token/HMAC、delivery 去重）
                          │
                          ▼
                   SQLite jobs（pending/running/done）
@@ -70,7 +82,7 @@ GitHub webhook ──> FastAPI /webhook（HMAC、delivery 去重）
        Publisher（行级评论 + 摘要 + 幂等 marker）
                        │
                        ▼
-              GitHub Review / dry-run
+        GitHub Review / GitLab notes+discussions / dry-run
 ```
 
 上下文检索、依赖图、policy 和历史 finding 都只是 LLM 的输入，不直接产生
@@ -108,6 +120,23 @@ PAT 仅作为单仓库本地调试的降级方案（`GITHUB_TOKEN`）。
 `OPENAI_*` / `COHERE_*` secrets 后发布 review。自审使用 `security` 模式；
 `push` 到 `main` 时另有 `push-audit`。它不是一个可直接复制到任意目标仓库的
 通用模板；目标仓库需要自行提供 workflow，并指定本仓库作为 agent 源。
+
+### GitLab CI / Webhook
+
+两种方式：
+
+1. 目标仓库引入 `ci/gitlab-codereview.yml`（同 namespace/group，可用
+   `include:project`），配置 `CODEREVIEW_GITLAB_TOKEN`（`api` scope）和
+   `OPENAI_*` 变量；MR pipeline 会调用
+   `python -m codereview.cli --provider gitlab ... --post`。
+   私有 agent 仓库的 clone 建议单独用 `read_repository` deploy token。
+2. 服务端配置 `GITLAB_TOKEN` + `GITLAB_WEBHOOK_SIGNING_SECRET`，把
+   `https://<公网主机>/webhook/gitlab` 配成 Merge request webhook。
+
+完整的变量表、signing token 校验、fork MR 限制、缓存/配额和排错见
+[`docs/GITLAB.md`](docs/GITLAB.md)。GitLab 没有 GitHub Review 的原子对象：
+发布顺序是 inline discussion 先发、summary note 最后发，逐条带 marker 以支持
+崩溃后重试去重；summary 成功后才算发布完成。
 
 ## 评审模式
 
@@ -154,6 +183,10 @@ GitHub Actions 只缓存 `data/codereview.db*` 和 `data/history.jsonl`；Chroma
 PR/分支，不能保证跨 PR 复用；仓库没有 artifact 或 `codereview-state.yml`
 转存 workflow。
 
+GitLab CI 模板把 `DATABASE_PATH/CHROMA_PATH/CACHE_DIR/history/audit` 统一放在
+`.codereview-state/`，用项目级 cache key 跨 MR 复用；`resource_group` 按项目
+串行化，避免 SQLite/Chroma 并发。GitLab 的 cache 是尽力而为，不是强一致存储。
+
 历史 finding 检索（`REVIEW_HISTORY_ENABLED=true`）会在成功发布后把 findings
 追加到 `REVIEW_HISTORY_PATH`，按 `(repo, pr, file, line, issue)` 去重，最多保留
 2000 条；后续运行用标题 + diff 做关键词检索，把相似历史 finding 注入 prompt。
@@ -165,9 +198,15 @@ PR/分支，不能保证跨 PR 复用；仓库没有 artifact 或 `codereview-st
 - 只有落在 diff 新增行（`valid_line_map`）上的 finding 才会变成 inline comment；
   其余进入 review 摘要，仍带 `file:line`。
 - 每条 review body 带隐藏标记 `<!-- codereview:<fingerprint> -->`，fingerprint
-  覆盖 findings + 评审配置。发布前同时检查 SQLite 和 GitHub 已有 review，避免
+  覆盖 findings + 评审配置。发布前同时检查 SQLite 和远程已有 review/note，避免
   重复评论。
 - GitHub 返回 422（行号已失效）时自动降级为「只发摘要」，不会整次失败。
+- GitLab 没有原子 review 对象：**inline discussion 先发、summary note 最后发**，
+  每条 inline 带 `<!-- codereview-inline:<fingerprint>:<index> -->`；重试时扫描
+  discussions 只补缺失，summary 成功后才 `mark_posted`。
+- GitLab diff 被截断（`too_large`/`collapsed`/`changes_count` 不匹配）或
+  `compare_timeout` 时默认 413 fail closed；`GITLAB_ALLOW_TRUNCATED_DIFF=true`
+  才继续并在 summary 顶部标注未审文件。发布前 head 变化则 409，不发任何内容。
 - 大 diff 分块；任一 chunk 的 LLM 调用失败时，默认整次不发布
   （`REVIEW_POST_ON_PARTIAL=false`），避免漏掉的那一块看起来没问题。
 
@@ -199,14 +238,18 @@ python -I -X utf8 scripts/evaluate.py \
 
 ## 文档与目录
 
+- `docs/GITLAB.md`：GitLab token/CI/webhook、发布语义、截断与排错。
 - `docs/MULTILANG-SPEC.md`：多语言 Context / Dependency 的规格与评测口径。
+- `ci/gitlab-codereview.yml` / `docs/gitlab-codereview.example.yml`：GitLab CI 模板。
 - `CLAUDE.md`：开发约定、命令和模块说明。
 - `prompts/README.md`：prompt 覆盖文件的格式。
-- `changlist/2026-11-10_multilang-context.md`：多语言改动的变更记录。
+- `changlist/2026-11-24_gitlab-support.md`：GitLab 支持的变更记录。
 
 ```text
 src/codereview/
   github/       App JWT、REST client、webhook 校验
+  gitlab/       REST v4 client、webhook 校验、MR 发布
+  scm.py        CodeHost 协议、repo 规范化、ProviderRouter
   diff/         unified diff 解析与分块
   context/      AST/窗口分块、embedding 缓存、增量索引、Chroma
   llm/          客户端、prompt 注册表、general/security/pattern/ensemble
@@ -214,7 +257,8 @@ src/codereview/
   storage/      SQLite（runs/jobs/cache/labels/snapshots）
   evaluation/   dataset、metrics、runner
   server/       FastAPI、worker、Prometheus
-scripts/        run_review / record_pr / evaluate / shadow_report / seed_from_l6
+tests/          离线测试（FakeGitHub / FakeGitLab / FakeLLM）
+scripts/        run_review / gitlab_bootstrap / record_pr / evaluate / shadow_report
 ```
 
 ## 自定义 Prompt
@@ -243,7 +287,12 @@ general 还要 `{instructions}`），字面花括号写成 `{{` / `}}`。格式�
   整次不发布。
 - GitHub Actions 的缓存按 PR/分支作用域，不同 PR 之间不保证复用；同一 PR 的并发
   run 由 `concurrency` 取消，不会并行写同一份状态。
-- 没有 GitHub App manifest 自动注册；需要手动创建 App。
+- GitLab CI 的 `resource_group` 按项目串行化；同项目不同 MR 的 pipeline 会排队。
+  fork MR 的 CI 模式不支持（拿不到目标项目变量），改用 webhook 服务。
+- GitLab 行内评论只支持新增行；旧侧/上下文行 finding 落 summary。GitLab 没有
+  commit status / approval 回写；CI 用 job 退出码，webhook 用 MR note。
+- 没有 GitHub App manifest 自动注册；需要手动创建 App。GitLab 用 PAT / project /
+  group access token，没有 GitHub App 等价物。
 - 没有多进程/多副本共享索引锁；同一 repo+ref 的并发建索引请把
   `REVIEW_CONCURRENCY` 设为 1。
 - 所有指标都是 LLM 输出，存在单次运行方差；不要用一次运行的数字做上线承诺。

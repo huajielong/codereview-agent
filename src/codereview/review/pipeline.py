@@ -119,6 +119,11 @@ class ReviewPipeline:
         self.history = history
         self.config_hash = settings.fingerprint()
 
+    @property
+    def host(self):
+        """Provider-neutral alias for the injected SCM host (``github`` kept for compatibility)."""
+        return self.github
+
     # --- public entry points ----------------------------------------------
 
     def review_pr(

@@ -10,6 +10,7 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from typing import Mapping
+from urllib.parse import urlparse
 
 from codereview.errors import ConfigError
 
@@ -18,7 +19,7 @@ VALID_SEVERITIES = ("low", "medium", "high")
 
 # Bump this when review behaviour changes in a way that must invalidate
 # persisted review caches (it participates in Settings.fingerprint()).
-ENGINE_VERSION = "2026-11-09.1"
+ENGINE_VERSION = "2026-11-24.1"
 
 
 def _bool(env: Mapping[str, str], key: str, default: bool) -> bool:
@@ -95,6 +96,16 @@ class Settings:
     github_timeout: float
     github_installation_id: int | None
 
+    # GitLab
+    gitlab_base_url: str
+    gitlab_api_url: str
+    gitlab_token: str | None
+    gitlab_webhook_secret: str | None
+    gitlab_webhook_signing_secret: str | None
+    gitlab_timeout: float
+    gitlab_allow_truncated_diff: bool
+    scm_provider: str
+
     # Review
     mode: str
     dry_run: bool
@@ -153,6 +164,22 @@ class Settings:
         except ValueError as exc:
             raise ConfigError("GITHUB_INSTALLATION_ID must be an integer") from exc
 
+        scm_provider = (_text(e, "SCM_PROVIDER", "github") or "github").lower()
+        if scm_provider not in ("github", "gitlab"):
+            raise ConfigError(
+                f"SCM_PROVIDER must be github or gitlab, got {scm_provider!r}"
+            )
+
+        gitlab_base_url = (
+            _text(e, "GITLAB_BASE_URL", "https://gitlab.com") or "https://gitlab.com"
+        ).rstrip("/")
+        parsed_base = urlparse(gitlab_base_url)
+        if parsed_base.scheme not in ("http", "https") or not parsed_base.netloc:
+            raise ConfigError(
+                "GITLAB_BASE_URL must be an absolute http(s) URL, "
+                f"got {gitlab_base_url!r}"
+            )
+
         return cls(
             openai_api_key=_text(e, "OPENAI_API_KEY"),
             openai_base_url=_text(e, "OPENAI_BASE_URL"),
@@ -169,6 +196,14 @@ class Settings:
             github_api_url=(_text(e, "GITHUB_API_URL", "https://api.github.com") or "").rstrip("/"),
             github_timeout=_float(e, "GITHUB_TIMEOUT", 30.0, minimum=1.0),
             github_installation_id=installation_id,
+            gitlab_base_url=gitlab_base_url,
+            gitlab_api_url=(_text(e, "GITLAB_API_URL", "") or "").rstrip("/"),
+            gitlab_token=_text(e, "GITLAB_TOKEN"),
+            gitlab_webhook_secret=_text(e, "GITLAB_WEBHOOK_SECRET"),
+            gitlab_webhook_signing_secret=_text(e, "GITLAB_WEBHOOK_SIGNING_SECRET"),
+            gitlab_timeout=_float(e, "GITLAB_TIMEOUT", 30.0, minimum=1.0),
+            gitlab_allow_truncated_diff=_bool(e, "GITLAB_ALLOW_TRUNCATED_DIFF", False),
+            scm_provider=scm_provider,
             mode=mode,  # type: ignore[arg-type]
             dry_run=_bool(e, "REVIEW_DRY_RUN", True),
             allowed_repos=_repos(e),
@@ -211,6 +246,23 @@ class Settings:
     def has_github_write(self) -> bool:
         return self.has_github_app() or bool(self.github_token)
 
+    def has_gitlab_write(self) -> bool:
+        return bool(self.gitlab_token)
+
+    def has_gitlab_webhook(self) -> bool:
+        return bool(
+            self.gitlab_webhook_secret or self.gitlab_webhook_signing_secret
+        )
+
+    def github_webhook_enabled(self) -> bool:
+        return bool(self.github_webhook_secret and self.has_github_write())
+
+    def gitlab_webhook_enabled(self) -> bool:
+        return bool(self.has_gitlab_webhook() and self.has_gitlab_write())
+
+    def gitlab_api_base(self) -> str:
+        return self.gitlab_api_url or f"{self.gitlab_base_url}/api/v4"
+
     def llm_available(self) -> bool:
         return bool(self.openai_api_key and self.model)
 
@@ -228,15 +280,34 @@ class Settings:
             raise ConfigError("OPENAI_API_KEY is not set.")
 
     def require_webhook(self) -> None:
-        if not self.github_webhook_secret:
-            raise ConfigError("GITHUB_WEBHOOK_SECRET is required to verify webhook signatures.")
-        if not self.has_github_write():
-            raise ConfigError(
-                "Configure GITHUB_APP_ID + GITHUB_PRIVATE_KEY_PATH, or GITHUB_TOKEN."
+        problems = []
+        if self.github_webhook_secret and not self.has_github_write():
+            problems.append(
+                "GitHub webhook secret is set but no GitHub write credentials"
             )
+        if self.has_gitlab_webhook() and not self.has_gitlab_write():
+            problems.append(
+                "GitLab webhook secret is set but GITLAB_TOKEN is empty"
+            )
+        if not (self.github_webhook_enabled() or self.gitlab_webhook_enabled()):
+            problems.append(
+                "no complete webhook provider is configured "
+                "(GitHub secret + write credentials, or GitLab webhook secret + GITLAB_TOKEN)"
+            )
+        if problems:
+            raise ConfigError("; ".join(problems))
 
     def repo_allowed(self, repo: str) -> bool:
-        return not self.allowed_repos or repo.lower() in self.allowed_repos
+        if not self.allowed_repos:
+            return True
+        key = (repo or "").lower()
+        if key in self.allowed_repos:
+            return True
+        host = urlparse(self.gitlab_base_url).netloc.lower()
+        if host and key.startswith(host + "/"):
+            # A qualified GitLab repo may be allowlisted as group/project.
+            return key[len(host) + 1:] in self.allowed_repos
+        return False
 
     # --- provenance --------------------------------------------------------
 
@@ -272,6 +343,9 @@ class Settings:
             "github_token",
             "github_webhook_secret",
             "github_private_key_path",
+            "gitlab_token",
+            "gitlab_webhook_secret",
+            "gitlab_webhook_signing_secret",
         ):
             if data.get(key):
                 data[key] = "***"
