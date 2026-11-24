@@ -16,10 +16,10 @@
 - `src/codereview/scm.py`：`CodeHost` Protocol、repo 规范化/全限定、provider 检测、
   `ProviderRouter`。
 - `src/codereview/gitlab/client.py`：REST v4 客户端；MR diff、compare、archive、
-  notes/discussions、summary-last 发布、逐条 inline marker、截断检测。
+  notes/discussions、两阶段 summary 发布、逐条 inline marker、截断检测。
 - `src/codereview/gitlab/webhook.py`：legacy token / Standard Webhooks 验签、
   Merge Request 事件映射、去重键、bot 判定。
-- `tests/`：101 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
+- `tests/`：103 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
 - `ci/gitlab-codereview.yml`、`docs/gitlab-codereview.example.yml`、`.gitlab-ci.yml`。
 - `docs/GITLAB.md`。
 - `scripts/gitlab_bootstrap.py`：建私有项目/推送/CI 变量/deploy token（不打印 secret）。
@@ -43,8 +43,9 @@
 
 ## 关键设计决定
 
-1. **GitLab 发布不是原子的**：inline discussion 先发、summary note 最后发；每条
-   inline 带独立 marker，重试只补缺失；summary 成功后才 `mark_posted`。
+1. **GitLab 发布不是原子的**：先创建 pending summary note（时间线顶部），再发
+   inline discussion，最后编辑成最终 summary；pending/inline marker 支持重试，
+   最终 summary 成功后才 `mark_posted`。
 2. **repo 身份**：GitLab 用 `<host>/<path>`，GitHub 保持 `owner/repo`，共用 SQLite
    但不撞键，无需迁移。
 3. **截断 fail closed**：`too_large`/`collapsed`/`changes_count` 不匹配/
@@ -104,12 +105,16 @@
   `PRIVATE`，`--from-env-file` 的密码类变量自动 masked。
 - **bootstrap HTTPS 校验**：`--base-url`/`GITLAB_BASE_URL` 只接受 HTTPS
   （localhost/127.0.0.1/::1 例外），避免 PAT 和 git 凭据走明文。
+- **两阶段 summary**：`create_review` 先创建带 `<!-- codereview-pending:<fp> -->`
+  的 pending summary note（页面顶部），再发 inline discussions，最后 `PUT` 更新为
+  带 `<!-- codereview:<fp> -->` 的最终 summary；重试复用 pending note，只补缺失
+  inline，最终更新成功后才 `mark_posted`。
 
 ## 验证
 
 ```bash
 python -m compileall -q src scripts tests
-python -I -X utf8 -m pytest -q          # 101 passed
+python -I -X utf8 -m pytest -q          # 103 passed
 python -m pip wheel . --no-deps -w dist
 python -I -X utf8 scripts/check_production.py --provider gitlab
 ```

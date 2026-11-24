@@ -48,7 +48,7 @@ GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITL
 
 ## 验证状态（2026-11-24）
 
-- 离线：101 个测试通过；`compileall`、wheel 构建通过。
+- 离线：103 个测试通过；`compileall`、wheel 构建通过。
 - GitHub：PR #7 的 `review` self-review check 在提交 `700ef7e` 上通过（16m42s）；
   `push-audit` 在 PR 上按设计 skipped。本文档更新会触发一次新的 review check。
 - GitLab：`huajielong/codereview-agent` MR !1 已合并，`main` 的 verify pipeline
@@ -169,9 +169,10 @@ secret）。`--set-review-token` 需要另给 `--review-token` / `--review-token
 （project access token）；只有显式 `--allow-pat-as-review-token` 才允许把 bootstrap
 PAT 写进目标项目。脚本的 `--base-url` / `GITLAB_BASE_URL` 只接受 HTTPS（localhost
 例外）；`--from-env-file` 的 `*_PASSWORD`、`*_PASSWD`、`*_CREDENTIAL`、
-`*_PRIVATE*` 等键会自动 masked。GitLab 没有 GitHub Review 的原子对象：发布顺序是
-inline discussion 先发、summary note 最后发，逐条带 marker 以支持崩溃后重试去重；
-summary 成功后才算发布完成。
+`*_PRIVATE*` 等键会自动 masked。GitLab 没有 GitHub Review 的原子对象，发布采用
+两阶段 summary：先创建 pending summary note（在 MR 时间线顶部），再发 inline
+discussions，最后编辑该 note 为最终 summary；pending/inline marker 支持崩溃后重试，
+最终 summary 更新成功后才算发布完成。
 
 ## 评审模式
 
@@ -242,9 +243,12 @@ pipeline 使用；`codereview-push-audit` 用 `cache: []` + `PIP_NO_CACHE_DIR=1`
   覆盖 findings + 评审配置。发布前同时检查 SQLite 和远程已有 review/note，避免
   重复评论。
 - GitHub 返回 422（行号已失效）时自动降级为「只发摘要」，不会整次失败。
-- GitLab 没有原子 review 对象：**inline discussion 先发、summary note 最后发**，
-  每条 inline 带 `<!-- codereview-inline:<fingerprint>:<index> -->`；重试时扫描
-  discussions 只补缺失，summary 成功后才 `mark_posted`。
+- GitLab 没有原子 review 对象：先创建带
+  `<!-- codereview-pending:<fingerprint> -->` 的 pending summary note，再发 inline
+  discussions；每条 inline 带 `<!-- codereview-inline:<fingerprint>:<index> -->`；
+  最后 `PUT` 把 pending note 更新为带 `<!-- codereview:<fingerprint> -->` 的最终
+  summary。重试复用 pending note，只补缺失 inline；最终 summary 成功后才
+  `mark_posted`。
 - GitLab diff 被截断（`too_large`/`collapsed`/`changes_count` 不匹配）或
   `compare_timeout` 时默认 413 fail closed；`GITLAB_ALLOW_TRUNCATED_DIFF=true`
   才继续并在 summary 顶部标注未审文件。发布前 head 变化则 409，不发任何内容。

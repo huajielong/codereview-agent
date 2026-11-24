@@ -32,7 +32,12 @@ log = get_logger(__name__)
 _INLINE_MARKER_RE = re.compile(
     r"<!--\s*codereview-inline:(?P<fingerprint>[0-9a-f]{16}):(?P<index>\d+)\s*-->"
 )
-_SUMMARY_MARKER_RE = re.compile(r"<!--\s*codereview:(?P<fingerprint>[0-9a-f]{16})\s*-->")
+_SUMMARY_MARKER_RE = re.compile(
+    r"<!--\s*codereview:(?P<fingerprint>[0-9a-f]{16})\s*-->"
+)
+_PENDING_MARKER_RE = re.compile(
+    r"<!--\s*codereview-pending:(?P<fingerprint>[0-9a-f]{16})\s*-->"
+)
 _DIFF_GIT_RE = re.compile(r"^diff --git ", re.MULTILINE)
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
@@ -642,12 +647,16 @@ class GitLabClient:
         event: str = "COMMENT",
         installation_id: int | None = None,
     ) -> dict:
-        """Publish inline discussions first, then one summary note.
+        """Publish a pending summary, inline discussions, then final summary.
 
-        GitLab has no atomic review object. Inline comments carry their own
-        marker so a crash/retry can skip what was already posted; the summary
-        marker (the existing ``Publisher`` idempotency key) is written last and
-        is the signal that the whole review is complete.
+        GitLab has no atomic review object and sorts notes by creation time, so
+        posting the summary last would leave it at the bottom of the MR page.
+        Instead, create a pending summary note first (it stays at the top), post
+        missing inline discussions, then edit that note into the final summary.
+        Inline markers and the pending marker make retries idempotent: a crash
+        before the final edit reuses the pending note and only fills gaps. The
+        final ``codereview:<fingerprint>`` marker is written last and is the
+        signal that the whole review is complete.
         """
         _, encoded = self._project(repo)
         mr_url = self._mr_url(encoded, number)
@@ -676,10 +685,27 @@ class GitLabClient:
         fingerprint = self._fingerprint_from_body(body, comments)
         posted = 0
         skipped = 0
+        pending_note_id: int | None = None
 
         if comments:
             if not (head_sha and base_sha and start_sha):
                 raise GitLabAPIError(409, "merge request diff_refs is empty", mr_url)
+            pending_note_id = self._find_pending_summary(
+                encoded, number, fingerprint
+            )
+            if pending_note_id is None:
+                response = self._request(
+                    "POST",
+                    f"{mr_url}/notes",
+                    data={"body": self._pending_summary_body(fingerprint)},
+                )
+                payload = response.json()
+                note_id = payload.get("id") if isinstance(payload, dict) else None
+                if not isinstance(note_id, int):
+                    raise GitLabAPIError(
+                        502, "GitLab did not return a summary note id", mr_url
+                    )
+                pending_note_id = note_id
             existing = self._existing_inline_markers(encoded, number, fingerprint)
             old_paths = self._old_path_map(encoded, number)
             for index, comment in enumerate(comments):
@@ -750,11 +776,20 @@ class GitLabClient:
                     mr_url,
                 )
 
-        response = self._request("POST", f"{mr_url}/notes", data={"body": body})
+        if pending_note_id is not None:
+            response = self._request(
+                "PUT",
+                f"{mr_url}/notes/{pending_note_id}",
+                data={"body": body},
+            )
+        else:
+            response = self._request(
+                "POST", f"{mr_url}/notes", data={"body": body}
+            )
         payload = response.json()
         note_id = payload.get("id") if isinstance(payload, dict) else None
         return {
-            "id": note_id,
+            "id": note_id if note_id is not None else pending_note_id,
             "inline_posted": posted,
             "inline_skipped": skipped,
         }
@@ -766,6 +801,33 @@ class GitLabClient:
             return match.group("fingerprint")
         blob = body + json.dumps(comments, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _pending_summary_body(fingerprint: str) -> str:
+        return (
+            "> **AI code review in progress.** Inline comments are being "
+            "posted; this note will be updated when the review completes.\n\n"
+            f"<!-- codereview-pending:{fingerprint} -->"
+        )
+
+    def _find_pending_summary(
+        self, encoded: str, number: int, fingerprint: str
+    ) -> int | None:
+        notes = self._paginate(
+            f"{self._mr_url(encoded, number)}/notes",
+            params={"per_page": 100},
+        )
+        found: list[int] = []
+        for note in notes:
+            body = str(note.get("body") or "")
+            for match in _PENDING_MARKER_RE.finditer(body):
+                if match.group("fingerprint") == fingerprint:
+                    note_id = note.get("id")
+                    if isinstance(note_id, int):
+                        found.append(note_id)
+        # Oldest wins if two attempts raced; deleting the extra note would be
+        # more destructive than leaving one pending note behind.
+        return min(found) if found else None
 
     @staticmethod
     def _inline_body(comment: dict, fingerprint: str, index: int) -> str:
