@@ -48,7 +48,7 @@ GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITL
 
 ## 验证状态（2026-11-24）
 
-- 离线：93 个测试通过；`compileall`、wheel 构建通过。
+- 离线：98 个测试通过；`compileall`、wheel 构建通过。
 - GitHub：PR #7 的 `review` self-review check 在提交 `700ef7e` 上通过（16m42s）；
   `push-audit` 在 PR 上按设计 skipped。本文档更新会触发一次新的 review check。
 - GitLab：`huajielong/codereview-agent` MR !1 已合并，`main` 的 verify pipeline
@@ -149,10 +149,12 @@ agent 自审 PR 会红。
 
 1. 目标仓库引入 `ci/gitlab-codereview.yml`（同 namespace/group，可用
    `include:project`），把 `include.ref` 和 `CODEREVIEW_AGENT_REF` 一起 pin 到
-   同一个 tag（如 `v0.1.0`）；配置 `CODEREVIEW_GITLAB_TOKEN`（**project access
-   token**，`api` scope；不要在不可信项目里用个人 PAT）和 `OPENAI_*` 变量；MR
-   pipeline 会调用 `python -m codereview.cli --provider gitlab ... --post`。
-   私有 agent 仓库的 clone **必须**单独用 `read_repository` deploy token
+   同一个版本 tag（如 `v0.1.0`）或完整 40 位 commit SHA；使用分支需要显式
+   `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。配置 `CODEREVIEW_GITLAB_TOKEN`
+   （**project access token**，`api` scope；不要在不可信项目里用个人 PAT）和
+   `OPENAI_*` 变量；MR pipeline 会调用
+   `python -m codereview.cli --provider gitlab ... --post`。私有 agent 仓库的
+   clone **必须**单独用 `read_repository` deploy token
    （`CODEREVIEW_AGENT_CLONE_TOKEN`），模板不会回退到评审 token；clone 走 Git
    credential helper，token 不写进 URL 或 `.git/config`。
 2. 服务端配置 `GITLAB_TOKEN` + `GITLAB_WEBHOOK_SIGNING_SECRET`，把
@@ -164,9 +166,11 @@ agent 自审 PR 会红。
 项目、推送分支、创建 `read_repository` deploy token 并写入 masked CI 变量（不打印
 secret）。`--set-review-token` 需要另给 `--review-token` / `--review-token-file`
 （project access token）；只有显式 `--allow-pat-as-review-token` 才允许把 bootstrap
-PAT 写进目标项目。GitLab 没有 GitHub Review 的原子对象：发布顺序是 inline
-discussion 先发、summary note 最后发，逐条带 marker 以支持崩溃后重试去重；summary
-成功后才算发布完成。
+PAT 写进目标项目。脚本的 `--base-url` / `GITLAB_BASE_URL` 只接受 HTTPS（localhost
+例外）；`--from-env-file` 的 `*_PASSWORD`、`*_PASSWD`、`*_CREDENTIAL`、
+`*_PRIVATE*` 等键会自动 masked。GitLab 没有 GitHub Review 的原子对象：发布顺序是
+inline discussion 先发、summary note 最后发，逐条带 marker 以支持崩溃后重试去重；
+summary 成功后才算发布完成。
 
 ## 评审模式
 
@@ -218,7 +222,10 @@ GitLab CI 模板把 `DATABASE_PATH/CHROMA_PATH/CACHE_DIR/history/audit` 统一�
 和 `$CI_MERGE_REQUEST_IID`，**按分支/MR 隔离**，避免分支（包括大小写归一后与
 `main` 撞 slug 的 `Main`）写坏 main 的 review state/pip cache；`resource_group`
 仍按项目串行化，避免 SQLite/Chroma 并发。代价是默认不跨 MR 复用
-review/embedding cache。GitLab 的 cache 是尽力而为，不是强一致存储。
+review/embedding cache。GitLab 的 cache 是尽力而为，不是强一致存储，也**不是安全
+边界**：能改 `.gitlab-ci.yml` 的人可以写任意 key。`codereview` 的 cache 只在 MR
+pipeline 使用；`codereview-push-audit` 用 `cache: []` + `PIP_NO_CACHE_DIR=1`，
+不读取 MR 写入的 state/pip cache；agent 仓库自己的 `verify` 也不使用 GitLab cache。
 
 历史 finding 检索（`REVIEW_HISTORY_ENABLED=true`）会在成功发布后把 findings
 追加到 `REVIEW_HISTORY_PATH`，按 `(repo, pr, file, line, issue)` 去重，最多保留
@@ -326,6 +333,9 @@ general 还要 `{instructions}`），字面花括号写成 `{{` / `}}`。格式�
 - GitLab CI 的 `resource_group` 按项目串行化；同项目不同 MR 的 pipeline 会排队。
   cache key 按 ref + protected + MR IID 隔离，默认不跨 MR 复用。fork MR 的 CI
   模式不支持（拿不到目标项目变量），改用 webhook 服务。
+- GitLab CI cache 不是安全边界：MR 作者可以改 `.gitlab-ci.yml` 写任意 key。
+  `codereview-push-audit` 已禁用 cache/pip cache；agent 仓库自己的 `verify`
+  也不用 GitLab cache。不要把 cache 当成隔离机制。
 - GitLab CI 变量对任何能修改 `.gitlab-ci.yml`/运行 pipeline 的人可见；因此评审
   token 用 **project access token**、限制谁能 push/run pipeline，不要用个人 PAT。
   agent clone 必须用独立 `read_repository` deploy token。只跑保护分支/tag 的

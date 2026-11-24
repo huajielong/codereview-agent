@@ -19,7 +19,7 @@
   notes/discussions、summary-last 发布、逐条 inline marker、截断检测。
 - `src/codereview/gitlab/webhook.py`：legacy token / Standard Webhooks 验签、
   Merge Request 事件映射、去重键、bot 判定。
-- `tests/`：93 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
+- `tests/`：98 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
 - `ci/gitlab-codereview.yml`、`docs/gitlab-codereview.example.yml`、`.gitlab-ci.yml`。
 - `docs/GITLAB.md`。
 - `scripts/gitlab_bootstrap.py`：建私有项目/推送/CI 变量/deploy token（不打印 secret）。
@@ -67,8 +67,10 @@
   `api` 评审 token；clone 走 credential helper，token 不进 URL/`.git/config`。
 - GitLab CI cache key 含 `$CI_COMMIT_REF_SLUG`、`$CI_COMMIT_REF_PROTECTED` 和
   `$CI_MERGE_REQUEST_IID`，按分支/MR 隔离，避免 `Main`/`main` 这类 slug 碰撞；
-  agent ref 默认 `v0.1.0`，`main`/`master` 需显式
-  `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。
+  agent ref 默认 `v0.1.0`，只接受 `vX.Y.Z` 或完整 40 位 commit SHA，使用分支需
+  显式 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。
+- GitLab CI cache 不是安全边界：`codereview-push-audit` 使用 `cache: []` +
+  `PIP_NO_CACHE_DIR=1`，agent 仓库的 `verify` 也不使用 GitLab cache。
 - 文档建议 CI 评审 token 用 **project access token**；CI 变量对能修改
   `.gitlab-ci.yml` 的人可见，需限制 push/run pipeline 权限。这是 CI 模式接受的
   风险，webhook 模式不把 token 暴露给 MR job。
@@ -87,11 +89,24 @@
 - 文档明确 CI 模式 token 暴露是接受的风险，并给出 project access token、权限
   收敛、webhook 替代方案。
 
+### 第二轮 review 后续
+
+- **CI cache 不作为安全边界**：`codereview-push-audit` 禁用 GitLab cache 和 pip
+  cache（`cache: []` + `PIP_NO_CACHE_DIR=1`）；agent 仓库 `verify` 也不使用
+  GitLab cache，避免 MR 分支投毒 protected 流水线。
+- **agent ref 收紧**：`CODEREVIEW_AGENT_REF` 只接受 `vX.Y.Z` 或完整 40 位 commit
+  SHA；`main`/`master`/`develop` 等分支必须显式
+  `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`，不再只拒绝 `main`/`master`。
+- **secret masking 扩展**：`SECRET_HINTS` 增加 `PASSWORD`/`PASSWD`/`CREDENTIAL`/
+  `PRIVATE`，`--from-env-file` 的密码类变量自动 masked。
+- **bootstrap HTTPS 校验**：`--base-url`/`GITLAB_BASE_URL` 只接受 HTTPS
+  （localhost/127.0.0.1/::1 例外），避免 PAT 和 git 凭据走明文。
+
 ## 验证
 
 ```bash
 python -m compileall -q src scripts tests
-python -I -X utf8 -m pytest -q          # 93 passed
+python -I -X utf8 -m pytest -q          # 98 passed
 python -m pip wheel . --no-deps -w dist
 python -I -X utf8 scripts/check_production.py --provider gitlab
 ```

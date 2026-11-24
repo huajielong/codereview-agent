@@ -5,7 +5,10 @@ stages:
 
 variables:
   CODEREVIEW_PYTHON_IMAGE: python:3.11
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  # GitLab CI cache is not a security boundary: an MR that edits
+  # .gitlab-ci.yml can write any cache key. The self-check therefore uses no
+  # GitLab cache and no pip cache, so a branch cannot poison main's verify run.
+  PIP_NO_CACHE_DIR: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 verify:
@@ -14,13 +17,6 @@ verify:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-  cache:
-    # Per-ref pip cache: protected status + MR IID keep a branch whose slug
-    # collides with the default branch (e.g. Main -> main) from poisoning main.
-    key: "codereview-agent-pip-$CI_JOB_IMAGE-$CI_COMMIT_REF_SLUG-$CI_COMMIT_REF_PROTECTED-$CI_MERGE_REQUEST_IID"
-    paths:
-      - .cache/pip/
-    policy: pull-push
   script:
     - python -m pip install -r requirements.txt
     - python -m compileall -q src scripts tests
