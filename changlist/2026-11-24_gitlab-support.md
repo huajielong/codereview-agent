@@ -19,7 +19,7 @@
   notes/discussions、summary-last 发布、逐条 inline marker、截断检测。
 - `src/codereview/gitlab/webhook.py`：legacy token / Standard Webhooks 验签、
   Merge Request 事件映射、去重键、bot 判定。
-- `tests/`：78 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
+- `tests/`：79 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
 - `ci/gitlab-codereview.yml`、`docs/gitlab-codereview.example.yml`、`.gitlab-ci.yml`。
 - `docs/GITLAB.md`。
 - `scripts/gitlab_bootstrap.py`：建私有项目/推送/CI 变量/deploy token（不打印 secret）。
@@ -56,7 +56,7 @@
 
 ```bash
 python -m compileall -q src scripts tests
-python -I -X utf8 -m pytest -q          # 78 passed
+python -I -X utf8 -m pytest -q          # 79 passed
 python -m pip wheel . --no-deps -w dist
 python -I -X utf8 scripts/check_production.py --provider gitlab
 ```
