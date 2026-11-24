@@ -108,7 +108,10 @@ include:
 模板默认 `CODEREVIEW_AGENT_REF=v0.1.0`，只接受版本 tag（`vX.Y.Z`）或完整的
 40 位 commit SHA；值不能包含空白或换行。使用 `main`/`master`/`develop` 等分支
 必须显式设 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。`include.ref` 与
-`CODEREVIEW_AGENT_REF` 要指向同一个 tag 或 commit。
+`CODEREVIEW_AGENT_REF` 要指向同一个 tag 或 commit。clone 后还会检查 HEAD：
+tag/SHA 必须是 detached HEAD；如果名字被解析成分支（例如仓库里同时存在名为
+`v0.1.0` 的分支），任务会失败，避免分支伪装成 tag。完整 SHA 通过 `git fetch`
+获取，不依赖 `git clone --branch`。
 
 ### 3.2 目标仓库需要配置的变量
 

@@ -19,7 +19,7 @@
   notes/discussions、summary-last 发布、逐条 inline marker、截断检测。
 - `src/codereview/gitlab/webhook.py`：legacy token / Standard Webhooks 验签、
   Merge Request 事件映射、去重键、bot 判定。
-- `tests/`：100 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
+- `tests/`：101 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
 - `ci/gitlab-codereview.yml`、`docs/gitlab-codereview.example.yml`、`.gitlab-ci.yml`。
 - `docs/GITLAB.md`。
 - `scripts/gitlab_bootstrap.py`：建私有项目/推送/CI 变量/deploy token（不打印 secret）。
@@ -97,7 +97,9 @@
 - **agent ref 收紧**：`CODEREVIEW_AGENT_REF` 只接受 `vX.Y.Z` 或完整 40 位 commit
   SHA；`main`/`master`/`develop` 等分支必须显式
   `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`，不再只拒绝 `main`/`master`。包含
-  空白/换行的多行值也直接拒绝，避免 `grep` 行匹配绕过。
+  空白/换行的多行值也直接拒绝，避免 `grep` 行匹配绕过。clone 后还会检查 HEAD：
+  非 opt-in 时必须是 detached HEAD，名为 `vX.Y.Z` 的分支不能伪装成 tag；完整 SHA
+  通过 `git fetch` 获取。
 - **secret masking 扩展**：`SECRET_HINTS` 增加 `PASSWORD`/`PASSWD`/`CREDENTIAL`/
   `PRIVATE`，`--from-env-file` 的密码类变量自动 masked。
 - **bootstrap HTTPS 校验**：`--base-url`/`GITLAB_BASE_URL` 只接受 HTTPS
@@ -107,7 +109,7 @@
 
 ```bash
 python -m compileall -q src scripts tests
-python -I -X utf8 -m pytest -q          # 100 passed
+python -I -X utf8 -m pytest -q          # 101 passed
 python -m pip wheel . --no-deps -w dist
 python -I -X utf8 scripts/check_production.py --provider gitlab
 ```

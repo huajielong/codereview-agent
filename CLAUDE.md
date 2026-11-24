@@ -44,7 +44,7 @@ python -I -X utf8 -m pytest tests/test_publisher.py -q
 python -I -X utf8 -m pytest tests/test_factory.py -q
 ```
 
-当前 100 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
+当前 101 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub` / `FakeGitLab`，不要把真实 key
 或网络调用带进测试。
 
@@ -310,7 +310,9 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
   不再回退到 `api` 评审 token；clone 用 Git credential helper，token 不进入 URL、
   `.git/config` 或进程参数。`CODEREVIEW_AGENT_REF` 默认 `v0.1.0`，只接受
   `vX.Y.Z` 或完整 40 位 commit SHA；使用分支需要显式
-  `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。
+  `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。clone 后检查 `git symbolic-ref -q
+  HEAD`：非 opt-in 时必须是 detached HEAD，分支伪装成 `vX.Y.Z` 会失败。完整 SHA
+  通过 `git fetch` 获取。
 - `GITLAB_BASE_URL` / `GITLAB_API_URL` 必须是 `https://`；明文 `http://` 只允许
   localhost/127.0.0.1/::1。
 - `scripts/gitlab_bootstrap.py`：幂等创建私有项目、`--push` 分支、创建
