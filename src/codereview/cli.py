@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from codereview.errors import ConfigError
 from codereview.logging_utils import setup_logging
 from codereview.models import severity_at_least
 from codereview.review.factory import build_pipeline
+from codereview.scm import coerce_provider, qualify_repo
 
 
 def review_exit_code(outcome, *, post: bool) -> int:
@@ -49,9 +51,15 @@ def _write_json(path: str | None, payload: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    parser = argparse.ArgumentParser(description="Review a GitHub PR or audit a push")
-    parser.add_argument("--repo", required=True, help="owner/repo")
-    parser.add_argument("--pr", type=int, default=None, help="PR number (PR mode)")
+    parser = argparse.ArgumentParser(description="Review a GitHub PR / GitLab MR or audit a push")
+    parser.add_argument("--repo", required=True, help="owner/repo or group/project")
+    parser.add_argument(
+        "--provider",
+        choices=["github", "gitlab"],
+        default=None,
+        help="SCM provider (default: SCM_PROVIDER, then github)",
+    )
+    parser.add_argument("--pr", type=int, default=None, help="PR number / MR IID (PR mode)")
     parser.add_argument("--installation-id", type=int, default=None)
     parser.add_argument("--head-sha", default=None)
     parser.add_argument("--mode", choices=["general", "security", "pattern", "ensemble"])
@@ -88,11 +96,18 @@ def main(argv: list[str] | None = None) -> int:
             settings = replace(settings, dry_run=False)
         if args.dry_run:
             settings = replace(settings, dry_run=True)
+        provider = coerce_provider(args.provider or settings.scm_provider)
+        repo = qualify_repo(provider, settings.gitlab_base_url, args.repo)
+        if provider == "gitlab" and args.installation_id is not None:
+            print(
+                "warning: --installation-id is GitHub-only and is ignored for GitLab",
+                file=sys.stderr,
+            )
         # Opt-in: without LOG_LEVEL the CLI stays quiet so stdout remains a
         # single JSON document for scripts. The Actions workflow sets it.
         if os.getenv("LOG_LEVEL"):
             setup_logging(settings.log_level)
-        pipeline = build_pipeline(settings)
+        pipeline = build_pipeline(settings, provider=provider)
     except ConfigError as exc:
         print(f"configuration error: {exc}")
         return 2
@@ -105,15 +120,16 @@ def main(argv: list[str] | None = None) -> int:
                     {"status": "skipped", "reason": "new branch push (before is all zeros)"},
                 )
                 return 0
+            installation_id = None if provider == "gitlab" else args.installation_id
             try:
                 diff = pipeline.github.get_compare_diff(
-                    args.repo, args.before, args.after, args.installation_id
+                    repo, args.before, args.after, installation_id
                 )
             except Exception as exc:  # noqa: BLE001
                 _write_json(args.json_out, {"status": "failed", "error": f"compare failed: {exc}"})
                 return 2
             outcome = pipeline.review_diff(
-                repo=args.repo,
+                repo=repo,
                 number=0,
                 title=f"Push to {args.branch}",
                 body=args.push_title,
@@ -136,10 +152,13 @@ def main(argv: list[str] | None = None) -> int:
             ]
             return 1 if failing else 0
 
+        installation_id = None
+        if provider == "github":
+            installation_id = args.installation_id or settings.github_installation_id
         outcome = pipeline.review_pr(
-            args.repo,
+            repo,
             args.pr,
-            args.installation_id or settings.github_installation_id,
+            installation_id,
             head_sha=args.head_sha,
             force=args.force,
         )

@@ -10,6 +10,7 @@ from codereview.context.retriever import ContextRetriever
 from codereview.context.store import ChromaVectorStore, MemoryVectorStore
 from codereview.github.auth import build_token_provider
 from codereview.github.client import GitHubClient
+from codereview.gitlab.client import GitLabClient
 from codereview.llm.client import LLMClient
 from codereview.llm.prompts import PromptRegistry
 from codereview.llm.reviewers import Reviewer
@@ -19,6 +20,7 @@ from codereview.review.pipeline import ReviewPipeline
 from codereview.review.policy import load_policy
 from codereview.review.publisher import Publisher
 from codereview.review.workspace import RepoWorkspace
+from codereview.scm import CodeHost, ProviderRouter, coerce_provider
 from codereview.storage.db import Database
 
 log = get_logger(__name__)
@@ -32,19 +34,41 @@ def _make_store(settings: Settings):
         return MemoryVectorStore()
 
 
+def build_code_host(settings: Settings, provider: str) -> CodeHost:
+    provider = coerce_provider(provider)
+    if provider == "github":
+        return GitHubClient(settings, build_token_provider(settings))
+    return GitLabClient(settings)
+
+
+def _build_hosts(settings: Settings) -> CodeHost:
+    """Auto-select one host, or a router when both providers are configured."""
+    hosts: dict[str, CodeHost] = {}
+    if settings.has_github_write() or not settings.has_gitlab_write():
+        hosts["github"] = build_code_host(settings, "github")
+    if settings.has_gitlab_write():
+        hosts["gitlab"] = build_code_host(settings, "gitlab")
+    if len(hosts) == 1:
+        return next(iter(hosts.values()))
+    return ProviderRouter(settings, hosts)
+
+
 def build_pipeline(
     settings: Settings,
     *,
     db: Database | None = None,
-    github: GitHubClient | None = None,
+    github: CodeHost | None = None,
     llm: LLMClient | None = None,
+    provider: str | None = None,
 ) -> ReviewPipeline:
     settings.require_llm()
     database = db or Database(settings.db_path)
 
     if github is None:
-        provider = build_token_provider(settings)
-        github = GitHubClient(settings, provider)
+        if provider in (None, "auto"):
+            github = _build_hosts(settings)
+        else:
+            github = build_code_host(settings, provider)
     if llm is None:
         llm = LLMClient(settings)
 

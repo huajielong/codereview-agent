@@ -12,13 +12,14 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from dotenv import load_dotenv
 
 
-def check(settings) -> dict:
+def check(settings, provider: str = "github") -> dict:
     from codereview.llm.prompts import PromptRegistry
     from codereview.review.policy import load_policy
     from codereview.storage.db import Database
@@ -45,22 +46,75 @@ def check(settings) -> dict:
         critical=False,
         warning=not settings.embedding_available(),
     )
-    add(
-        "webhook_secret",
-        bool(settings.github_webhook_secret) and len(settings.github_webhook_secret or "") >= 16,
-        "set and >=16 chars" if settings.github_webhook_secret else "GITHUB_WEBHOOK_SECRET is empty",
-    )
-
-    if settings.has_github_app():
-        key = Path(settings.github_private_key_path or "")
-        add("github_app_key", key.is_file() and os.access(key, os.R_OK), f"private key path exists: {key}")
-        add("github_app_id", bool(settings.github_app_id), settings.github_app_id or "GITHUB_APP_ID is empty")
-    else:
+    if provider in ("github", "both"):
         add(
-            "github_write_auth",
-            bool(settings.github_token),
-            "GITHUB_TOKEN set (PAT fallback)" if settings.github_token else "no GitHub App and no GITHUB_TOKEN",
+            "webhook_secret",
+            bool(settings.github_webhook_secret) and len(settings.github_webhook_secret or "") >= 16,
+            "set and >=16 chars" if settings.github_webhook_secret else "GITHUB_WEBHOOK_SECRET is empty",
         )
+
+        if settings.has_github_app():
+            key = Path(settings.github_private_key_path or "")
+            add("github_app_key", key.is_file() and os.access(key, os.R_OK), f"private key path exists: {key}")
+            add("github_app_id", bool(settings.github_app_id), settings.github_app_id or "GITHUB_APP_ID is empty")
+        else:
+            add(
+                "github_write_auth",
+                bool(settings.github_token),
+                "GITHUB_TOKEN set (PAT fallback)" if settings.github_token else "no GitHub App and no GITHUB_TOKEN",
+            )
+
+    def secure_gitlab_url(url: str) -> bool:
+        parsed = urlparse(url)
+        local = (parsed.hostname or "").lower() in ("localhost", "127.0.0.1", "::1")
+        return parsed.scheme == "https" or (parsed.scheme == "http" and local)
+
+    if provider in ("gitlab", "both"):
+        add(
+            "gitlab_write_auth",
+            settings.has_gitlab_write(),
+            "GITLAB_TOKEN is set" if settings.gitlab_token else "GITLAB_TOKEN is empty",
+        )
+        add(
+            "gitlab_base_url",
+            secure_gitlab_url(settings.gitlab_base_url),
+            settings.gitlab_base_url
+            if secure_gitlab_url(settings.gitlab_base_url)
+            else f"{settings.gitlab_base_url} (must be https, http only for localhost)",
+        )
+        if settings.gitlab_api_url:
+            add(
+                "gitlab_api_url",
+                secure_gitlab_url(settings.gitlab_api_url),
+                settings.gitlab_api_url
+                if secure_gitlab_url(settings.gitlab_api_url)
+                else f"{settings.gitlab_api_url} (must be https, http only for localhost)",
+            )
+        add(
+            "gitlab_webhook_auth",
+            settings.has_gitlab_webhook(),
+            "signing token or secret token is set"
+            if settings.has_gitlab_webhook()
+            else "GITLAB_WEBHOOK_SECRET / GITLAB_WEBHOOK_SIGNING_SECRET is empty",
+        )
+        if settings.gitlab_webhook_secret and not settings.gitlab_webhook_signing_secret:
+            add(
+                "gitlab_webhook_secret_length",
+                len(settings.gitlab_webhook_secret) >= 16,
+                "legacy secret token is >=16 chars"
+                if len(settings.gitlab_webhook_secret) >= 16
+                else "legacy GITLAB_WEBHOOK_SECRET should be >=16 chars",
+            )
+        if settings.gitlab_webhook_signing_secret:
+            add(
+                "gitlab_signing_secret_format",
+                settings.gitlab_webhook_signing_secret.startswith("whsec_"),
+                "whsec_ prefix"
+                if settings.gitlab_webhook_signing_secret.startswith("whsec_")
+                else "signing token should start with whsec_",
+                critical=False,
+                warning=not settings.gitlab_webhook_signing_secret.startswith("whsec_"),
+            )
 
     if settings.policy_enabled:
         policy_path = Path(settings.policy_path)
@@ -155,11 +209,17 @@ def main(argv: list[str] | None = None) -> int:
     from codereview.config import Settings
 
     parser = argparse.ArgumentParser(description="Production readiness checks (offline)")
+    parser.add_argument(
+        "--provider",
+        choices=["github", "gitlab", "both"],
+        default="github",
+        help="which SCM provider's credentials to validate (default: github)",
+    )
     parser.add_argument("--json-out", default=None)
     args = parser.parse_args(argv)
 
     settings = Settings.from_env()
-    report = check(settings)
+    report = check(settings, args.provider)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.json_out:
         Path(args.json_out).write_text(text, encoding="utf-8")

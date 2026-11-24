@@ -25,10 +25,17 @@ def main(argv: list[str] | None = None) -> int:
     from codereview.cli import review_exit_code
     from codereview.config import Settings
     from codereview.review.factory import build_pipeline
+    from codereview.scm import coerce_provider, qualify_repo
 
-    parser = argparse.ArgumentParser(description="Review a GitHub PR once")
-    parser.add_argument("--repo", required=True, help="owner/repo")
-    parser.add_argument("--pr", required=True, type=int)
+    parser = argparse.ArgumentParser(description="Review one GitHub PR or GitLab MR")
+    parser.add_argument("--repo", required=True, help="owner/repo or group/project")
+    parser.add_argument(
+        "--provider",
+        choices=["github", "gitlab"],
+        default=None,
+        help="SCM provider (default: SCM_PROVIDER, then github)",
+    )
+    parser.add_argument("--pr", required=True, type=int, help="PR number / MR IID")
     parser.add_argument("--installation-id", type=int, default=None)
     parser.add_argument("--head-sha", default=None)
     parser.add_argument("--mode", choices=["general", "security", "pattern", "ensemble"])
@@ -46,11 +53,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         settings = replace(settings, dry_run=True)
 
-    pipeline = build_pipeline(settings)
-    installation_id = args.installation_id or settings.github_installation_id
+    provider = coerce_provider(args.provider or settings.scm_provider)
+    repo = qualify_repo(provider, settings.gitlab_base_url, args.repo)
+    pipeline = build_pipeline(settings, provider=provider)
+    installation_id = None
+    if provider == "github":
+        installation_id = args.installation_id or settings.github_installation_id
     try:
         outcome = pipeline.review_pr(
-            args.repo,
+            repo,
             args.pr,
             installation_id,
             head_sha=args.head_sha,

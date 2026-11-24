@@ -1,0 +1,107 @@
+# Reusable GitLab CI template for AI code review.
+#
+# Include it from a target repository:
+#
+#   include:
+#     - project: huajielong/codereview-agent
+#       ref: v0.1.0
+#       file: /ci/gitlab-codereview.yml
+#
+# Required CI/CD variables in the target repository:
+#   CODEREVIEW_GITLAB_TOKEN       Project access token with api scope (preferred;
+#                                 never a personal PAT in an untrusted project).
+#   CODEREVIEW_AGENT_CLONE_TOKEN  Required read_repository deploy token for
+#                                 cloning the private agent repository.
+#   OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL (+ optional COHERE_*).
+#
+# Pin include.ref and CODEREVIEW_AGENT_REF to the same tag. Running a mutable
+# branch requires CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true.
+#
+# The job is intentionally same-project-only. Fork MR pipelines run in the fork
+# project and cannot read the target project's variables; use the webhook
+# service for fork MRs.
+
+variables:
+  CODEREVIEW_PYTHON_IMAGE: python:3.11
+  CODEREVIEW_AGENT_PATH: huajielong/codereview-agent
+  CODEREVIEW_AGENT_REF: v0.1.0
+  CODEREVIEW_AGENT_CLONE_USER: oauth2
+  CODEREVIEW_MODE: security
+  CODEREVIEW_CONTEXT_ENABLED: "true"
+  CODEREVIEW_DEPENDENCY_ENABLED: "true"
+  CODEREVIEW_HISTORY_ENABLED: "true"
+  CODEREVIEW_ALLOW_TRUNCATED_DIFF: "false"
+
+.codereview_base:
+  stage: test
+  image: $CODEREVIEW_PYTHON_IMAGE
+  resource_group: "codereview-$CI_PROJECT_ID"
+  interruptible: false
+  variables:
+    GIT_STRATEGY: none
+    GIT_TERMINAL_PROMPT: "0"
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    OPENAI_TIMEOUT: "300"
+    GITLAB_TOKEN: "$CODEREVIEW_GITLAB_TOKEN"
+    GITLAB_BASE_URL: "$CI_SERVER_URL"
+    DATABASE_PATH: "$CI_PROJECT_DIR/.codereview-state/codereview.db"
+    CHROMA_PATH: "$CI_PROJECT_DIR/.codereview-state/chroma"
+    CACHE_DIR: "$CI_PROJECT_DIR/.codereview-state/cache"
+    REVIEW_AUDIT_PATH: "$CI_PROJECT_DIR/.codereview-state/audit.jsonl"
+    REVIEW_HISTORY_PATH: "$CI_PROJECT_DIR/.codereview-state/history.jsonl"
+    REVIEW_MODE: "$CODEREVIEW_MODE"
+    REVIEW_DRY_RUN: "false"
+    REVIEW_ALLOWED_REPOS: "$CI_MERGE_REQUEST_PROJECT_PATH"
+    REVIEW_CONTEXT_ENABLED: "$CODEREVIEW_CONTEXT_ENABLED"
+    REVIEW_DEPENDENCY_ENABLED: "$CODEREVIEW_DEPENDENCY_ENABLED"
+    REVIEW_HISTORY_ENABLED: "$CODEREVIEW_HISTORY_ENABLED"
+    REVIEW_POST_ON_PARTIAL: "false"
+    GITLAB_ALLOW_TRUNCATED_DIFF: "$CODEREVIEW_ALLOW_TRUNCATED_DIFF"
+  cache:
+    # Per-ref key: protected status + MR IID keep a branch whose slug collides
+    # with the default branch (e.g. Main -> main) from poisoning main's state.
+    key: "codereview-state-$CI_PROJECT_ID-$CI_COMMIT_REF_SLUG-$CI_COMMIT_REF_PROTECTED-$CI_MERGE_REQUEST_IID"
+    paths:
+      - .codereview-state/
+      - .cache/pip/
+    policy: pull-push
+    when: always
+  before_script:
+    - mkdir -p .codereview-state .cache/pip
+    - if [ -z "$CODEREVIEW_AGENT_CLONE_TOKEN" ]; then echo "CODEREVIEW_AGENT_CLONE_TOKEN is required (read_repository deploy token)"; exit 1; fi
+    - case "$CODEREVIEW_AGENT_REF" in main|master) if [ "${CODEREVIEW_ALLOW_MUTABLE_AGENT_REF:-false}" != "true" ]; then echo "pin CODEREVIEW_AGENT_REF and include.ref to a tag"; exit 1; fi;; esac
+    - SERVER="${CI_SERVER_URL}"
+    - SCHEME="${SERVER%%://*}"
+    - SERVER="${SERVER#*://}"
+    - git -c 'credential.helper=!f() { test "$1" = get && printf "username=%s\npassword=%s\n" "${CODEREVIEW_AGENT_CLONE_USER:-oauth2}" "$CODEREVIEW_AGENT_CLONE_TOKEN"; }; f' clone --depth 1 --branch "$CODEREVIEW_AGENT_REF" "${SCHEME}://${SERVER}/${CODEREVIEW_AGENT_PATH}.git" .codereview-agent
+    - python -m pip install -r .codereview-agent/requirements.txt
+    - python -m pip install --no-deps -e .codereview-agent
+
+codereview:
+  extends: .codereview_base
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_PROJECT_PATH == $CI_MERGE_REQUEST_PROJECT_PATH'
+  script:
+    - python -I -X utf8 -m codereview.cli --provider gitlab --repo "$CI_MERGE_REQUEST_PROJECT_PATH" --pr "$CI_MERGE_REQUEST_IID" --post --json-out codereview.json
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - codereview.json
+
+# Optional: audit direct pushes to the default branch. The CLI never posts in
+# --push mode; it exits non-zero when a high-severity finding is present.
+codereview-push-audit:
+  extends: .codereview_base
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  variables:
+    REVIEW_DRY_RUN: "true"
+  script:
+    - python -I -X utf8 -m codereview.cli --provider gitlab --repo "$CI_PROJECT_PATH" --push --before "$CI_COMMIT_BEFORE_SHA" --after "$CI_COMMIT_SHA" --branch "$CI_COMMIT_BRANCH" --push-title "$CI_COMMIT_TITLE" --fail-on-severity high --json-out push-audit.json
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - push-audit.json

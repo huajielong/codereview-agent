@@ -101,7 +101,7 @@ class RepoWorkspace:
         self, repo: str, ref: str, installation_id: int | None = None
     ) -> Path:
         if not self.github:
-            raise IndexError_("GitHub client is not configured")
+            raise IndexError_("SCM client is not configured")
         if not ref:
             raise IndexError_("ref is required to download a repository")
 

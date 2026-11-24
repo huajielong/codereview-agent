@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 
 from codereview.config import Settings
-from codereview.errors import GitHubAPIError
+from codereview.errors import GitHubAPIError, SCMAPIError
 from codereview.logging_utils import get_logger
 from codereview.models import Finding, PublishResult
 from codereview.review.paths import normalize_path, resolve_path
@@ -233,7 +233,7 @@ class Publisher:
                     posted=False,
                     inline_comments=plan.inline,
                     summary_body=plan.summary,
-                    skipped_reason="already posted (GitHub marker)",
+                    skipped_reason="already posted (remote marker)",
                 )
 
         body = plan.summary
@@ -285,6 +285,15 @@ class Publisher:
                     summary_body=body,
                     errors=[f"post failed: {exc}"],
                 )
+        except SCMAPIError as exc:
+            # GitLab (and any non-GitHub host) publishes its summary itself;
+            # never run the GitHub-only "drop inline comments and repost" path.
+            return PublishResult(
+                posted=False,
+                inline_comments=plan.inline,
+                summary_body=body,
+                errors=[f"post failed: {exc}"],
+            )
         except Exception as exc:  # noqa: BLE001
             return PublishResult(
                 posted=False,

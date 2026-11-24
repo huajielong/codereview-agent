@@ -37,6 +37,8 @@ def _error_message(response: httpx.Response) -> str:
 
 
 class GitHubClient:
+    provider_name = "github"
+
     def __init__(
         self,
         settings: Settings,

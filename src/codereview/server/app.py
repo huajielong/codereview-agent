@@ -17,9 +17,15 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from codereview.config import Settings
 from codereview.github.webhook import parse_pull_request_event, should_review, verify_signature
+from codereview.gitlab.webhook import (
+    delivery_id as gitlab_delivery_id,
+    parse_merge_request_event,
+    verify_request as verify_gitlab_request,
+)
 from codereview.logging_utils import get_logger, setup_logging
 from codereview.review.factory import build_pipeline
 from codereview.server.metrics import Metrics
+from codereview.server.ratelimit import RateLimiter
 from codereview.storage.db import Database
 
 log = get_logger(__name__)
@@ -47,6 +53,9 @@ def create_app(
         app.state.queue = asyncio.Queue()
         app.state.pipeline = pipeline
         app.state.workers = []
+        app.state.webhook_limiter = RateLimiter(
+            cfg.webhook_rate_limit, cfg.webhook_rate_window
+        )
 
         async def worker(worker_id: int) -> None:
             while True:
@@ -119,6 +128,26 @@ def create_app(
 
     app = FastAPI(title="codereview-agent", lifespan=lifespan)
 
+    def _rate_limit(request: Request) -> None:
+        client = request.client.host if request.client else "unknown"
+        if not app.state.webhook_limiter.allow(client):
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total", {"reason": "rate_limit"}
+            )
+            raise HTTPException(429, "rate limit exceeded")
+
+    async def _read_body(request: Request) -> bytes:
+        limit = cfg.webhook_max_bytes
+        declared = request.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > limit:
+            raise HTTPException(413, "payload too large")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > limit:
+                raise HTTPException(413, "payload too large")
+        return bytes(body)
+
     @app.get("/healthz")
     async def healthz():
         return {"status": "ok"}
@@ -139,7 +168,10 @@ def create_app(
 
     @app.post("/webhook")
     async def webhook(request: Request):
-        body = await request.body()
+        if not cfg.github_webhook_secret:
+            raise HTTPException(404, "GitHub webhook is not configured")
+        _rate_limit(request)
+        body = await _read_body(request)
         signature = request.headers.get("X-Hub-Signature-256")
         secret = cfg.github_webhook_secret or ""
         if not verify_signature(secret, body, signature):
@@ -190,6 +222,66 @@ def create_app(
         app.state.metrics.inc("codereview_webhook_received_total")
         return JSONResponse(
             {"status": "queued", "delivery": delivery_id}, status_code=202
+        )
+
+    @app.post("/webhook/gitlab")
+    async def webhook_gitlab(request: Request):
+        if not cfg.has_gitlab_webhook():
+            raise HTTPException(404, "GitLab webhook is not configured")
+        _rate_limit(request)
+        body = await _read_body(request)
+        ok, verify_reason = verify_gitlab_request(cfg, request.headers, body)
+        if not ok:
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total",
+                {"reason": f"gitlab_{verify_reason}"},
+            )
+            raise HTTPException(401, f"invalid GitLab webhook {verify_reason}")
+
+        event_name = request.headers.get("X-Gitlab-Event", "")
+        delivery = gitlab_delivery_id(request.headers, body)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise HTTPException(400, "invalid JSON")
+
+        database = app.state.db
+        if not database.record_delivery(delivery, event_name or "gitlab"):
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total", {"reason": "duplicate"}
+            )
+            return JSONResponse({"status": "duplicate"}, status_code=202)
+
+        event = parse_merge_request_event(
+            event_name, payload, delivery, cfg.gitlab_base_url
+        )
+        if event is None:
+            return JSONResponse({"status": "ignored"}, status_code=202)
+
+        decision, reason = should_review(event, cfg)
+        if not decision:
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total", {"reason": reason}
+            )
+            return JSONResponse({"status": "skipped", "reason": reason}, status_code=202)
+
+        if not cfg.dry_run and not cfg.has_gitlab_write():
+            raise HTTPException(503, "GitLab write credentials are not configured")
+        if not getattr(app.state, "pipeline", None):
+            raise HTTPException(503, "pipeline is not ready")
+
+        database.create_job(
+            delivery,
+            event.repo,
+            event.number,
+            None,
+            event.action,
+            event.head_sha,
+        )
+        await app.state.queue.put(delivery)
+        app.state.metrics.inc("codereview_webhook_received_total")
+        return JSONResponse(
+            {"status": "queued", "delivery": delivery}, status_code=202
         )
 
     return app

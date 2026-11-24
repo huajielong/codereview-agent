@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "codereview-agent"
 version = "0.1.0"
-description = "Production GitHub PR security review agent extracted from DeepLearning.AI L6"
+description = "Production GitHub/GitLab code review agent extracted from DeepLearning.AI L6"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi==0.128.8",
