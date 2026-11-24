@@ -16,7 +16,7 @@ import json
 import re
 import threading
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
@@ -34,6 +34,7 @@ _INLINE_MARKER_RE = re.compile(
 )
 _SUMMARY_MARKER_RE = re.compile(r"<!--\s*codereview:(?P<fingerprint>[0-9a-f]{16})\s*-->")
 _DIFF_GIT_RE = re.compile(r"^diff --git ", re.MULTILINE)
+_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 
 def _next_link(link_header: str | None) -> str | None:
@@ -91,7 +92,9 @@ class GitLabClient:
         self._client = httpx.Client(
             timeout=settings.gitlab_timeout,
             transport=transport,
-            follow_redirects=True,
+            # Redirects are handled manually so PRIVATE-TOKEN is never
+            # forwarded to a different origin (httpx only strips Authorization).
+            follow_redirects=False,
         )
         # Per-thread diff warnings: get_pull_diff and create_review run in the
         # same review thread, while the server may run several reviews at once.
@@ -117,10 +120,66 @@ class GitLabClient:
             headers["PRIVATE-TOKEN"] = self.settings.gitlab_token
         return headers
 
+    def _same_origin(self, url: str) -> bool:
+        base = urlsplit(self.settings.gitlab_api_base())
+        target = urlsplit(url)
+        return (target.scheme, target.netloc) == (base.scheme, base.netloc)
+
     def _url(self, path: str) -> str:
         if path.startswith("http"):
+            if not self._same_origin(path):
+                raise GitLabAPIError(502, "refusing cross-origin URL", path)
             return path
         return f"{self.settings.gitlab_api_base()}{path}"
+
+    def _request_once(
+        self,
+        method: str,
+        url: str,
+        *,
+        accept: str,
+        params: dict | None,
+        data: dict | None,
+        json_body: dict | None,
+    ) -> httpx.Response:
+        current_url = url
+        current_params = params
+        current_method = method
+        current_data = data
+        current_json = json_body
+        headers = self._headers(accept)
+
+        for _ in range(6):
+            response = self._client.request(
+                current_method,
+                current_url,
+                headers=headers,
+                params=current_params,
+                data=current_data,
+                json=current_json,
+            )
+            if response.status_code not in _REDIRECT_STATUSES:
+                return response
+
+            location = response.headers.get("Location")
+            if not location:
+                raise GitLabAPIError(502, "redirect without Location", current_url)
+            target = urljoin(current_url, location)
+            if urlsplit(target).scheme not in ("http", "https"):
+                raise GitLabAPIError(502, "refusing non-http redirect", target)
+            if not self._same_origin(target):
+                raise GitLabAPIError(502, "refusing cross-origin redirect", target)
+            current_url = target
+            current_params = None
+            if response.status_code == 303 or (
+                response.status_code in (301, 302)
+                and current_method not in ("GET", "HEAD")
+            ):
+                current_method = "GET"
+                current_data = None
+                current_json = None
+
+        raise GitLabAPIError(502, "too many redirects", current_url)
 
     def _request(
         self,
@@ -138,13 +197,13 @@ class GitLabClient:
 
         for attempt in range(1, retries + 1):
             try:
-                response = self._client.request(
+                response = self._request_once(
                     method,
                     full_url,
-                    headers=self._headers(accept),
+                    accept=accept,
                     params=params,
                     data=data,
-                    json=json_body,
+                    json_body=json_body,
                 )
             except httpx.TransportError as exc:
                 last_error = exc
@@ -225,6 +284,10 @@ class GitLabClient:
 
             link = _next_link(response.headers.get("Link"))
             if link:
+                if not self._same_origin(link):
+                    raise GitLabAPIError(
+                        502, "refusing cross-origin pagination link", link
+                    )
                 next_url = link
                 next_params = None
                 continue
@@ -480,47 +543,84 @@ class GitLabClient:
         last_error: Exception | None = None
 
         for attempt in range(1, retries + 1):
+            current_url = url
+            current_params: dict | None = {"sha": ref}
+            current_headers = self._headers("application/octet-stream")
+            retry_attempt = False
             try:
-                with self._client.stream(
-                    "GET",
-                    url,
-                    headers=self._headers("application/octet-stream"),
-                    params={"sha": ref},
-                ) as response:
-                    if response.status_code == 401:
-                        raise GitLabAuthError(_error_message(response), url)
-                    if 500 <= response.status_code < 600 and attempt < retries:
-                        response.read()
-                        self._sleep(1.5 * attempt)
-                        continue
-                    if response.status_code in (403, 429) and attempt < retries:
-                        response.read()
-                        self._sleep(self._rate_limit_delay(response.headers))
-                        continue
-                    if response.status_code >= 400:
-                        response.read()
-                        raise GitLabAPIError(
-                            response.status_code, _error_message(response), url
-                        )
+                for _ in range(6):
+                    with self._client.stream(
+                        "GET",
+                        current_url,
+                        headers=current_headers,
+                        params=current_params,
+                    ) as response:
+                        if response.status_code in _REDIRECT_STATUSES:
+                            location = response.headers.get("Location")
+                            if not location:
+                                raise GitLabAPIError(
+                                    502, "redirect without Location", current_url
+                                )
+                            target = urljoin(current_url, location)
+                            if urlsplit(target).scheme not in ("http", "https"):
+                                raise GitLabAPIError(
+                                    502, "refusing non-http redirect", target
+                                )
+                            if not self._same_origin(target):
+                                # GitLab may redirect archives to object
+                                # storage; that URL is signed and must not
+                                # receive PRIVATE-TOKEN.
+                                current_headers = {
+                                    key: value
+                                    for key, value in current_headers.items()
+                                    if key != "PRIVATE-TOKEN"
+                                }
+                            current_url = target
+                            current_params = None
+                            continue
 
-                    declared = response.headers.get("Content-Length")
-                    if declared and declared.isdigit() and int(declared) > limit:
-                        raise GitLabAPIError(
-                            413,
-                            f"tarball exceeds REPO_MAX_MB={self.settings.repo_max_mb}",
-                            url,
-                        )
+                        if response.status_code == 401:
+                            raise GitLabAuthError(_error_message(response), current_url)
+                        if 500 <= response.status_code < 600 and attempt < retries:
+                            response.read()
+                            self._sleep(1.5 * attempt)
+                            retry_attempt = True
+                            break
+                        if response.status_code in (403, 429) and attempt < retries:
+                            response.read()
+                            self._sleep(self._rate_limit_delay(response.headers))
+                            retry_attempt = True
+                            break
+                        if response.status_code >= 400:
+                            response.read()
+                            raise GitLabAPIError(
+                                response.status_code,
+                                _error_message(response),
+                                current_url,
+                            )
 
-                    buffer = bytearray()
-                    for chunk in response.iter_bytes(64 * 1024):
-                        buffer.extend(chunk)
-                        if len(buffer) > limit:
+                        declared = response.headers.get("Content-Length")
+                        if declared and declared.isdigit() and int(declared) > limit:
                             raise GitLabAPIError(
                                 413,
                                 f"tarball exceeds REPO_MAX_MB={self.settings.repo_max_mb}",
-                                url,
+                                current_url,
                             )
-                    return bytes(buffer)
+
+                        buffer = bytearray()
+                        for chunk in response.iter_bytes(64 * 1024):
+                            buffer.extend(chunk)
+                            if len(buffer) > limit:
+                                raise GitLabAPIError(
+                                    413,
+                                    f"tarball exceeds REPO_MAX_MB={self.settings.repo_max_mb}",
+                                    current_url,
+                                )
+                        return bytes(buffer)
+                else:
+                    raise GitLabAPIError(502, "too many redirects", current_url)
+                if retry_attempt:
+                    continue
             except httpx.TransportError as exc:
                 last_error = exc
                 if attempt >= retries:

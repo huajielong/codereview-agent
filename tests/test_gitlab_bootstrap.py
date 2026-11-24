@@ -5,8 +5,9 @@ import json
 from urllib.parse import unquote
 
 import httpx
+import pytest
 
-from scripts.gitlab_bootstrap import create_deploy_token, ensure_project, set_variable
+from scripts.gitlab_bootstrap import _check, create_deploy_token, ensure_project, set_variable
 
 
 def client(handler) -> httpx.Client:
@@ -84,6 +85,23 @@ def test_set_variable_masks_secret_keys():
 
     assert seen[0]["masked"] is True
     assert seen[1]["masked"] is False
+
+
+def test_redirects_are_rejected_not_followed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"Location": "https://evil.example/steal"},
+        )
+
+    c = client(handler)
+    try:
+        assert c.follow_redirects is False
+        response = c.get("/user")
+        with pytest.raises(SystemExit):
+            _check(response, "GET /user")
+    finally:
+        c.close()
 
 
 def test_create_deploy_token_returns_none_when_it_already_exists():

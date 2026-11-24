@@ -15,7 +15,8 @@ verify:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   cache:
-    key: "codereview-agent-pip-$CI_JOB_IMAGE"
+    # Per-ref pip cache: a branch/MR cannot poison main's cache.
+    key: "codereview-agent-pip-$CI_JOB_IMAGE-$CI_COMMIT_REF_SLUG"
     paths:
       - .cache/pip/
     policy: pull-push

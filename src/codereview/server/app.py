@@ -25,6 +25,7 @@ from codereview.gitlab.webhook import (
 from codereview.logging_utils import get_logger, setup_logging
 from codereview.review.factory import build_pipeline
 from codereview.server.metrics import Metrics
+from codereview.server.ratelimit import RateLimiter
 from codereview.storage.db import Database
 
 log = get_logger(__name__)
@@ -52,6 +53,9 @@ def create_app(
         app.state.queue = asyncio.Queue()
         app.state.pipeline = pipeline
         app.state.workers = []
+        app.state.webhook_limiter = RateLimiter(
+            cfg.webhook_rate_limit, cfg.webhook_rate_window
+        )
 
         async def worker(worker_id: int) -> None:
             while True:
@@ -124,6 +128,26 @@ def create_app(
 
     app = FastAPI(title="codereview-agent", lifespan=lifespan)
 
+    def _rate_limit(request: Request) -> None:
+        client = request.client.host if request.client else "unknown"
+        if not app.state.webhook_limiter.allow(client):
+            app.state.metrics.inc(
+                "codereview_webhook_rejected_total", {"reason": "rate_limit"}
+            )
+            raise HTTPException(429, "rate limit exceeded")
+
+    async def _read_body(request: Request) -> bytes:
+        limit = cfg.webhook_max_bytes
+        declared = request.headers.get("Content-Length")
+        if declared and declared.isdigit() and int(declared) > limit:
+            raise HTTPException(413, "payload too large")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > limit:
+                raise HTTPException(413, "payload too large")
+        return bytes(body)
+
     @app.get("/healthz")
     async def healthz():
         return {"status": "ok"}
@@ -146,7 +170,8 @@ def create_app(
     async def webhook(request: Request):
         if not cfg.github_webhook_secret:
             raise HTTPException(404, "GitHub webhook is not configured")
-        body = await request.body()
+        _rate_limit(request)
+        body = await _read_body(request)
         signature = request.headers.get("X-Hub-Signature-256")
         secret = cfg.github_webhook_secret or ""
         if not verify_signature(secret, body, signature):
@@ -203,7 +228,8 @@ def create_app(
     async def webhook_gitlab(request: Request):
         if not cfg.has_gitlab_webhook():
             raise HTTPException(404, "GitLab webhook is not configured")
-        body = await request.body()
+        _rate_limit(request)
+        body = await _read_body(request)
         ok, verify_reason = verify_gitlab_request(cfg, request.headers, body)
         if not ok:
             app.state.metrics.inc(

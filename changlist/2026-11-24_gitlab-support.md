@@ -19,7 +19,7 @@
   notes/discussions、summary-last 发布、逐条 inline marker、截断检测。
 - `src/codereview/gitlab/webhook.py`：legacy token / Standard Webhooks 验签、
   Merge Request 事件映射、去重键、bot 判定。
-- `tests/`：79 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
+- `tests/`：86 个离线测试（FakeGitHub/FakeGitLab/FakeLLM、MockTransport、TestClient）。
 - `ci/gitlab-codereview.yml`、`docs/gitlab-codereview.example.yml`、`.gitlab-ci.yml`。
 - `docs/GITLAB.md`。
 - `scripts/gitlab_bootstrap.py`：建私有项目/推送/CI 变量/deploy token（不打印 secret）。
@@ -54,11 +54,27 @@
 5. **Webhook 不降级**：配置 signing secret 后只接受 HMAC，不接受 legacy token。
 6. **token 分权**：CI clone 用 deploy token；评审用 `api` token。
 
+## 安全加固（review 反馈）
+
+- GitLab HTTP 客户端不再自动跟随 redirect；`PRIVATE-TOKEN` 只发同源，分页 `Link`
+  必须同源；archive 跨域跳转时去掉 token 再跟随。
+- `scripts/gitlab_bootstrap.py` 关闭 redirect 跟随，3xx 直接报错。
+- `/webhook` 与 `/webhook/gitlab` 验签前按客户端 IP 限流
+  （`WEBHOOK_RATE_LIMIT`/`WEBHOOK_RATE_WINDOW`），并限制 body
+  （`WEBHOOK_MAX_BYTES`）；超限 429/413。
+- `GITLAB_BASE_URL` / `GITLAB_API_URL` 强制 `https://`（localhost 明文例外）。
+- GitLab CI clone **必须**用 `read_repository` deploy token，模板不再回退到
+  `api` 评审 token；clone 走 credential helper，token 不进 URL/`.git/config`。
+- GitLab CI cache key 含 `$CI_COMMIT_REF_SLUG`，按分支/MR 隔离；agent ref 默认
+  `v0.1.0`，`main`/`master` 需显式 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。
+- 文档建议 CI 评审 token 用 **project access token**；CI 变量对能修改
+  `.gitlab-ci.yml` 的人可见，需限制 push/run pipeline 权限。
+
 ## 验证
 
 ```bash
 python -m compileall -q src scripts tests
-python -I -X utf8 -m pytest -q          # 79 passed
+python -I -X utf8 -m pytest -q          # 86 passed
 python -m pip wheel . --no-deps -w dist
 python -I -X utf8 scripts/check_production.py --provider gitlab
 ```

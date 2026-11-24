@@ -42,6 +42,17 @@ def test_invalid_provider_and_base_url():
         Settings.from_env({"SCM_PROVIDER": "bitbucket"})
     with pytest.raises(ConfigError):
         Settings.from_env({"GITLAB_BASE_URL": "gitlab.com"})
+    with pytest.raises(ConfigError):
+        Settings.from_env({"GITLAB_BASE_URL": "http://gitlab.example.com"})
+    with pytest.raises(ConfigError):
+        Settings.from_env(
+            {
+                "GITLAB_BASE_URL": "https://gitlab.example.com",
+                "GITLAB_API_URL": "http://gitlab.example.com/api/v4",
+            }
+        )
+    # localhost HTTP is allowed for local development.
+    Settings.from_env({"GITLAB_BASE_URL": "http://localhost:8080"})
 
 
 def test_gitlab_stats_redacted():

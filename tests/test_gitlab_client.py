@@ -311,6 +311,79 @@ def test_archive_size_cap_and_success():
     assert client.download_tarball("group/proj", "head") == b"tarball-bytes"
 
 
+def test_cross_origin_redirect_is_refused_and_token_not_replayed():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            302, headers={"Location": "https://evil.example/steal"}
+        )
+
+    client, _ = make_client(handler)
+    with pytest.raises(GitLabAPIError) as exc:
+        client.get_pull("group/proj", 7)
+    assert exc.value.status == 502
+    assert len(requests) == 1
+    assert requests[0].headers["PRIVATE-TOKEN"] == "glpat-test"
+
+
+def test_same_origin_redirect_keeps_token():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": "https://gitlab.com/api/v4/projects/group%2Fproj/merge_requests/7"
+                },
+            )
+        return httpx.Response(200, json=mr_payload())
+
+    client, _ = make_client(handler)
+    assert client.get_pull("group/proj", 7).number == 7
+    assert len(requests) == 2
+    assert requests[1].headers["PRIVATE-TOKEN"] == "glpat-test"
+
+
+def test_cross_origin_pagination_link_is_refused():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"Link": '<https://evil.example/page2>; rel="next"'},
+            json=[{"id": 1, "body": "x"}],
+        )
+
+    client, _ = make_client(handler)
+    with pytest.raises(GitLabAPIError) as exc:
+        client.list_reviews("group/proj", 7)
+    assert exc.value.status == 502
+    assert len(requests) == 1
+
+
+def test_tarball_cross_origin_redirect_drops_token():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(
+                302, headers={"Location": "https://objects.example/signed"}
+            )
+        assert "PRIVATE-TOKEN" not in request.headers
+        return httpx.Response(200, content=b"tarball-bytes")
+
+    client, _ = make_client(handler)
+    assert client.download_tarball("group/proj", "head") == b"tarball-bytes"
+    assert len(requests) == 2
+    assert "PRIVATE-TOKEN" in requests[0].headers
+
+
 def test_429_retries_and_401_does_not():
     calls = {"count": 0}
 

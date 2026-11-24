@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -63,6 +64,11 @@ def check(settings, provider: str = "github") -> dict:
                 "GITHUB_TOKEN set (PAT fallback)" if settings.github_token else "no GitHub App and no GITHUB_TOKEN",
             )
 
+    def secure_gitlab_url(url: str) -> bool:
+        parsed = urlparse(url)
+        local = (parsed.hostname or "").lower() in ("localhost", "127.0.0.1", "::1")
+        return parsed.scheme == "https" or (parsed.scheme == "http" and local)
+
     if provider in ("gitlab", "both"):
         add(
             "gitlab_write_auth",
@@ -71,9 +77,19 @@ def check(settings, provider: str = "github") -> dict:
         )
         add(
             "gitlab_base_url",
-            settings.gitlab_base_url.startswith(("http://", "https://")),
-            settings.gitlab_base_url,
+            secure_gitlab_url(settings.gitlab_base_url),
+            settings.gitlab_base_url
+            if secure_gitlab_url(settings.gitlab_base_url)
+            else f"{settings.gitlab_base_url} (must be https, http only for localhost)",
         )
+        if settings.gitlab_api_url:
+            add(
+                "gitlab_api_url",
+                secure_gitlab_url(settings.gitlab_api_url),
+                settings.gitlab_api_url
+                if secure_gitlab_url(settings.gitlab_api_url)
+                else f"{settings.gitlab_api_url} (must be https, http only for localhost)",
+            )
         add(
             "gitlab_webhook_auth",
             settings.has_gitlab_webhook(),

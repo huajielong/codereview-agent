@@ -140,6 +140,9 @@ class Settings:
     host: str
     port: int
     concurrency: int
+    webhook_rate_limit: int
+    webhook_rate_window: float
+    webhook_max_bytes: int
     log_level: str
     metrics_enabled: bool
     ignore_paths: tuple[str, ...] = ()
@@ -179,6 +182,34 @@ class Settings:
                 "GITLAB_BASE_URL must be an absolute http(s) URL, "
                 f"got {gitlab_base_url!r}"
             )
+        local_hosts = ("localhost", "127.0.0.1", "::1")
+        if (
+            parsed_base.scheme == "http"
+            and (parsed_base.hostname or "").lower() not in local_hosts
+        ):
+            raise ConfigError(
+                "GITLAB_BASE_URL must use https://; plain http is allowed only "
+                f"for localhost, got {gitlab_base_url!r}"
+            )
+        gitlab_api_url = (_text(e, "GITLAB_API_URL", "") or "").rstrip("/")
+        if gitlab_api_url:
+            parsed_api = urlparse(gitlab_api_url)
+            if (
+                parsed_api.scheme not in ("http", "https")
+                or not parsed_api.netloc
+            ):
+                raise ConfigError(
+                    "GITLAB_API_URL must be an absolute http(s) URL, "
+                    f"got {gitlab_api_url!r}"
+                )
+            if (
+                parsed_api.scheme == "http"
+                and (parsed_api.hostname or "").lower() not in local_hosts
+            ):
+                raise ConfigError(
+                    "GITLAB_API_URL must use https://; plain http is allowed only "
+                    f"for localhost, got {gitlab_api_url!r}"
+                )
 
         return cls(
             openai_api_key=_text(e, "OPENAI_API_KEY"),
@@ -197,7 +228,7 @@ class Settings:
             github_timeout=_float(e, "GITHUB_TIMEOUT", 30.0, minimum=1.0),
             github_installation_id=installation_id,
             gitlab_base_url=gitlab_base_url,
-            gitlab_api_url=(_text(e, "GITLAB_API_URL", "") or "").rstrip("/"),
+            gitlab_api_url=gitlab_api_url,
             gitlab_token=_text(e, "GITLAB_TOKEN"),
             gitlab_webhook_secret=_text(e, "GITLAB_WEBHOOK_SECRET"),
             gitlab_webhook_signing_secret=_text(e, "GITLAB_WEBHOOK_SIGNING_SECRET"),
@@ -233,6 +264,11 @@ class Settings:
             host=_text(e, "SERVER_HOST", "0.0.0.0") or "0.0.0.0",
             port=_int(e, "SERVER_PORT", 8000, minimum=1),
             concurrency=_int(e, "REVIEW_CONCURRENCY", 2, minimum=1),
+            webhook_rate_limit=_int(e, "WEBHOOK_RATE_LIMIT", 120, minimum=1),
+            webhook_rate_window=_float(e, "WEBHOOK_RATE_WINDOW", 60.0, minimum=1.0),
+            webhook_max_bytes=_int(
+                e, "WEBHOOK_MAX_BYTES", 5 * 1024 * 1024, minimum=1
+            ),
             log_level=(_text(e, "LOG_LEVEL", "INFO") or "INFO").upper(),
             metrics_enabled=_bool(e, "METRICS_ENABLED", True),
             ignore_paths=_paths(e),

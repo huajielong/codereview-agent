@@ -204,6 +204,30 @@ def test_signing_secret_is_strict_and_does_not_downgrade(tmp_path):
         db.close()
 
 
+def test_webhook_rate_limit(tmp_path):
+    app, db, _ = make_app(
+        tmp_path, WEBHOOK_RATE_LIMIT="1", WEBHOOK_RATE_WINDOW="60"
+    )
+    try:
+        with TestClient(app) as client:
+            first = post_gitlab(client, payload(), delivery="msg-rate-1")
+            second = post_gitlab(client, payload(), delivery="msg-rate-2")
+        assert first.status_code == 202
+        assert second.status_code == 429
+    finally:
+        db.close()
+
+
+def test_webhook_body_limit(tmp_path):
+    app, db, _ = make_app(tmp_path, WEBHOOK_MAX_BYTES="32")
+    try:
+        with TestClient(app) as client:
+            response = post_gitlab(client, payload())
+        assert response.status_code == 413
+    finally:
+        db.close()
+
+
 def test_routes_are_enabled_per_provider(tmp_path):
     gitlab_only, db, _ = make_app(tmp_path)
     try:

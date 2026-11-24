@@ -48,14 +48,14 @@ GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITL
 
 ## 验证状态（2026-11-24）
 
-- 离线：79 个测试通过；`compileall`、wheel 构建通过。
+- 离线：86 个测试通过；`compileall`、wheel 构建通过。
 - GitHub：PR #7 的 `review` self-review check 在提交 `700ef7e` 上通过（16m42s）；
   `push-audit` 在 PR 上按设计 skipped。本文档更新会触发一次新的 review check。
 - GitLab：`huajielong/codereview-agent` MR !1 已合并，`main` 的 verify pipeline
   成功；`huajielong/codereview-demo` MR !1 的 `codereview` job 成功，发布了
   summary note 与 `app.py:6` inline discussion；首次 head 重试同一 job 后
-  summary/inline 仍为 1/1。demo 的 CI ref 切到 agent `main` 后产生新 head，MR 上
-  现在共有 2 轮 review（2 summary / 2 inline），这是预期；demo `main` 的
+  summary/inline 仍为 1/1。demo 的 CI ref 已 pin 到 agent `v0.1.0`（fixture 变更
+  会新增 head，MR 上会累积多轮 review，这是预期）；demo `main` 的
   `codereview-push-audit` 成功。
 - Webhook：本地 uvicorn + 签名 curl 验证正确签名 202、错误签名 401、配 signing
   secret 后 legacy token 401；公网 webhook 未配置。
@@ -148,12 +148,16 @@ agent 自审 PR 会红。
 两种方式：
 
 1. 目标仓库引入 `ci/gitlab-codereview.yml`（同 namespace/group，可用
-   `include:project`），配置 `CODEREVIEW_GITLAB_TOKEN`（`api` scope）和
-   `OPENAI_*` 变量；MR pipeline 会调用
-   `python -m codereview.cli --provider gitlab ... --post`。
-   私有 agent 仓库的 clone 建议单独用 `read_repository` deploy token。
+   `include:project`），把 `include.ref` 和 `CODEREVIEW_AGENT_REF` 一起 pin 到
+   同一个 tag（如 `v0.1.0`）；配置 `CODEREVIEW_GITLAB_TOKEN`（**project access
+   token**，`api` scope；不要在不可信项目里用个人 PAT）和 `OPENAI_*` 变量；MR
+   pipeline 会调用 `python -m codereview.cli --provider gitlab ... --post`。
+   私有 agent 仓库的 clone **必须**单独用 `read_repository` deploy token
+   （`CODEREVIEW_AGENT_CLONE_TOKEN`），模板不会回退到评审 token；clone 走 Git
+   credential helper，token 不写进 URL 或 `.git/config`。
 2. 服务端配置 `GITLAB_TOKEN` + `GITLAB_WEBHOOK_SIGNING_SECRET`，把
-   `https://<公网主机>/webhook/gitlab` 配成 Merge request webhook。
+   `https://<公网主机>/webhook/gitlab` 配成 Merge request webhook。webhook 默认
+   按客户端 IP 限流 120 次/60s，body 上限 5 MiB（`WEBHOOK_*` 可调）。
 
 完整的变量表、signing token 校验、fork MR 限制、缓存/配额和排错见
 [`docs/GITLAB.md`](docs/GITLAB.md)。`scripts/gitlab_bootstrap.py` 可幂等创建私有
@@ -207,8 +211,10 @@ PR/分支，不能保证跨 PR 复用；仓库没有 artifact 或 `codereview-st
 转存 workflow。
 
 GitLab CI 模板把 `DATABASE_PATH/CHROMA_PATH/CACHE_DIR/history/audit` 统一放在
-`.codereview-state/`，用项目级 cache key 跨 MR 复用；`resource_group` 按项目
-串行化，避免 SQLite/Chroma 并发。GitLab 的 cache 是尽力而为，不是强一致存储。
+`.codereview-state/`，cache key 含 `$CI_COMMIT_REF_SLUG`，**按分支/MR 隔离**，
+避免分支写坏 main 的 review state/pip cache；`resource_group` 仍按项目串行化，
+避免 SQLite/Chroma 并发。代价是默认不跨 MR 复用 review/embedding cache。GitLab 的
+cache 是尽力而为，不是强一致存储。
 
 历史 finding 检索（`REVIEW_HISTORY_ENABLED=true`）会在成功发布后把 findings
 追加到 `REVIEW_HISTORY_PATH`，按 `(repo, pr, file, line, issue)` 去重，最多保留
@@ -311,11 +317,18 @@ general 还要 `{instructions}`），字面花括号写成 `{{` / `}}`。格式�
 - GitHub Actions 的缓存按 PR/分支作用域，不同 PR 之间不保证复用；同一 PR 的并发
   run 由 `concurrency` 取消，不会并行写同一份状态。
 - GitLab CI 的 `resource_group` 按项目串行化；同项目不同 MR 的 pipeline 会排队。
-  fork MR 的 CI 模式不支持（拿不到目标项目变量），改用 webhook 服务。
+  cache key 按 ref 隔离，默认不跨 MR 复用。fork MR 的 CI 模式不支持（拿不到目标
+  项目变量），改用 webhook 服务。
+- GitLab CI 变量对任何能修改 `.gitlab-ci.yml`/运行 pipeline 的人可见；因此评审
+  token 用 **project access token**、限制谁能 push/run pipeline，不要用个人 PAT。
+  agent clone 必须用独立 `read_repository` deploy token。
 - GitLab 行内评论只支持新增行；旧侧/上下文行 finding 落 summary。GitLab 没有
   commit status / approval 回写；CI 用 job 退出码，webhook 用 MR note。
 - GitLab webhook 真机需要一个 GitLab 能访问的公网 HTTPS 地址；本仓库未配置，
   目前只有本地 TestClient + 签名 curl 验证。
+- GitLab HTTP 客户端拒绝跨域 redirect/Link：`PRIVATE-TOKEN` 只在同源发送；archive
+  跳到对象存储时去掉 token 再跟随。webhook 在验签前按 IP 限流（默认 120/60s）并
+  限制 body（默认 5 MiB），超限 429/413。
 - 没有 GitHub App manifest 自动注册；需要手动创建 App。GitLab 用 PAT / project /
   group access token，没有 GitHub App 等价物。
 - 没有多进程/多副本共享索引锁；同一 repo+ref 的并发建索引请把

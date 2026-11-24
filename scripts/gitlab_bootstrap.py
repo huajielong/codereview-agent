@@ -38,11 +38,16 @@ def _client(base_url: str, token: str) -> httpx.Client:
         base_url=f"{base_url.rstrip('/')}/api/v4",
         headers={"PRIVATE-TOKEN": token, "User-Agent": "codereview-agent/0.1"},
         timeout=30.0,
-        follow_redirects=True,
+        # Manual/no redirects: PRIVATE-TOKEN must never be replayed to another origin.
+        follow_redirects=False,
     )
 
 
 def _check(response: httpx.Response, action: str) -> dict:
+    if 300 <= response.status_code < 400:
+        raise SystemExit(
+            f"{action} failed: unexpected redirect HTTP {response.status_code}"
+        )
     if response.status_code >= 400:
         try:
             message = response.json().get("message")

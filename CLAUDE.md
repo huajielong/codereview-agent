@@ -44,7 +44,7 @@ python -I -X utf8 -m pytest tests/test_publisher.py -q
 python -I -X utf8 -m pytest tests/test_factory.py -q
 ```
 
-当前 79 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
+当前 86 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub` / `FakeGitLab`，不要把真实 key
 或网络调用带进测试。
 
@@ -282,6 +282,12 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
   `webhook-signature`（`whsec_...`）。**配了 signing secret 后不降级接受 token**；
   `webhook-timestamp` 容差 300s；去重键是 `webhook-id`/`Idempotency-Key`/body hash，
   不用 `X-Gitlab-Event-UUID`。
+- 验签前按客户端 IP 限流（`WEBHOOK_RATE_LIMIT`/`WEBHOOK_RATE_WINDOW`，默认
+  120/60s），并限制 body（`WEBHOOK_MAX_BYTES`，默认 5 MiB）；超限 429/413。
+  这是单进程保护，公网仍建议加 WAF/反向代理。
+- HTTP 客户端**不自动跟随 redirect**：`PRIVATE-TOKEN` 只发往同源；分页 `Link`
+  必须同源，否则 502；archive 跳到对象存储时去掉 token 再跟随（签名 URL）。
+  不要改回 `follow_redirects=True`。
 - 事件只处理 `Merge Request Hook`；`open/reopen/update+oldrev/draft→ready` 触发，
   label-only update、approved、merge、close 跳过；payload 没有 `diff_refs`，
   head 只取 `last_commit.id`。
@@ -292,17 +298,24 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 - repo 身份：GitLab 一律 `<host>/<path>`（如 `gitlab.com/group/project`），GitHub
   保持 `owner/repo`；共用 DB 但键不冲突。`repo_allowed` 对带 host 的 GitLab repo
   允许裸 `group/project` allowlist，GitHub 仍精确匹配。
-- CI 的 `resource_group` 按项目串行化，避免 SQLite/Chroma 并发；fork MR 的 CI 模式
-  不支持，改用 webhook。
+- CI 的 `resource_group` 按项目串行化，避免 SQLite/Chroma 并发；cache key 含
+  `$CI_COMMIT_REF_SLUG`，按分支/MR 隔离，防止低权限分支写坏 main 的 state/pip
+  cache（代价：默认不跨 MR 复用）。fork MR 的 CI 模式不支持，改用 webhook。
+- CI 模板强制 `CODEREVIEW_AGENT_CLONE_TOKEN`（`read_repository` deploy token），
+  不再回退到 `api` 评审 token；clone 用 Git credential helper，token 不进入 URL、
+  `.git/config` 或进程参数。`CODEREVIEW_AGENT_REF` 默认 `v0.1.0`，`main`/`master`
+  需要显式 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。
+- `GITLAB_BASE_URL` / `GITLAB_API_URL` 必须是 `https://`；明文 `http://` 只允许
+  localhost/127.0.0.1/::1。
 - `scripts/gitlab_bootstrap.py`：幂等创建私有项目、`--push` 分支、创建
   `read_repository` deploy token、写 masked CI 变量；不打印 secret。个人 namespace
   创建时不能传 `namespace_id`（GitLab.com 会报 `organization_id` nil）。
 - **真机验证（2026-11-24）**：`huajielong/codereview-agent` MR !1 已合并，`main`
   verify pipeline 成功；`huajielong/codereview-demo` MR !1 的 `codereview` job 成功，
   首次 head 发布 summary + `app.py:6` inline discussion，重试 job 后 1/1 不变；
-  demo CI ref 切到 agent `main` 后产生新 head，MR 上共 2 轮 review（2/2），这是预期；
-  demo `main` 的 `codereview-push-audit` 成功。公网 webhook 未配置；本地签名 curl
-  已验证 202/401/401。
+  demo CI ref 已 pin 到 agent `v0.1.0`，fixture/ref 变更会新增 head，MR 上会累积
+  多轮 review（预期）；demo `main` 的 `codereview-push-audit` 成功。公网 webhook
+  未配置；本地签名 curl 已验证 202/401/401。
 
 ### 评测链路
 
@@ -335,6 +348,13 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 14. **dependency/history 是增强，不是保证**：dependency 支持单仓库 Python import、C/C++ 本地 `#include "..."`、JS/TS 相对 import/require；C/C++ 不处理宏/条件编译，JS/TS 不处理 `tsconfig` 别名，跨语言 API 依赖不在范围内。history 是关键词重叠检索，从空开始，可能把模型引向旧问题。不要把它们写成“已验证提升准确率”。
 15. **Chroma 不可用时回退内存索引**（`factory._make_store`），这时跨进程不共享；日志里会有 `chroma_unavailable_fallback_memory`。
 16. **ensemble 没有对照评测**；`README.md` 和 `changlist/` 的数字是单次运行/小样本，不要当 SLA。
+17. **GitLab 客户端不要开自动跨域 redirect**；分页 `Link` 必须同源。`PRIVATE-TOKEN`
+    泄露是 HIGH 级问题，不要为了兼容把 `follow_redirects` 改回 True。
+18. **Webhook 限流/body 上限不要删**（`WEBHOOK_RATE_LIMIT`/`WEBHOOK_MAX_BYTES`）；
+    公网端点验签前必须先限流和限大小。
+19. **GitLab CI token 分权 + ref pin + per-ref cache**：clone 只用 deploy token，
+    评审用 project access token；`CODEREVIEW_AGENT_REF`/`include.ref` pin 同一个 tag；
+    cache key 含 `$CI_COMMIT_REF_SLUG`，不要改回项目级共享 key。
 
 ## 参考文档
 

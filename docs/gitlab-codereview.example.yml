@@ -10,7 +10,7 @@
 variables:
   CODEREVIEW_PYTHON_IMAGE: python:3.11
   CODEREVIEW_AGENT_PATH: huajielong/codereview-agent
-  CODEREVIEW_AGENT_REF: main
+  CODEREVIEW_AGENT_REF: v0.1.0
   CODEREVIEW_AGENT_CLONE_USER: oauth2
   CODEREVIEW_MODE: security
   CODEREVIEW_CONTEXT_ENABLED: "true"
@@ -45,7 +45,8 @@ variables:
     REVIEW_POST_ON_PARTIAL: "false"
     GITLAB_ALLOW_TRUNCATED_DIFF: "$CODEREVIEW_ALLOW_TRUNCATED_DIFF"
   cache:
-    key: "codereview-state-$CI_PROJECT_ID"
+    # Per-ref key: a branch/MR cannot poison the cache used by main.
+    key: "codereview-state-$CI_PROJECT_ID-$CI_COMMIT_REF_SLUG"
     paths:
       - .codereview-state/
       - .cache/pip/
@@ -53,12 +54,12 @@ variables:
     when: always
   before_script:
     - mkdir -p .codereview-state .cache/pip
-    - CLONE_USER="${CODEREVIEW_AGENT_CLONE_USER:-oauth2}"
-    - CLONE_TOKEN="${CODEREVIEW_AGENT_CLONE_TOKEN:-$CODEREVIEW_GITLAB_TOKEN}"
+    - if [ -z "$CODEREVIEW_AGENT_CLONE_TOKEN" ]; then echo "CODEREVIEW_AGENT_CLONE_TOKEN is required (read_repository deploy token)"; exit 1; fi
+    - case "$CODEREVIEW_AGENT_REF" in main|master) if [ "${CODEREVIEW_ALLOW_MUTABLE_AGENT_REF:-false}" != "true" ]; then echo "pin CODEREVIEW_AGENT_REF and include.ref to a tag"; exit 1; fi;; esac
     - SERVER="${CI_SERVER_URL}"
     - SCHEME="${SERVER%%://*}"
     - SERVER="${SERVER#*://}"
-    - git clone --depth 1 --branch "$CODEREVIEW_AGENT_REF" "${SCHEME}://${CLONE_USER}:${CLONE_TOKEN}@${SERVER}/${CODEREVIEW_AGENT_PATH}.git" .codereview-agent
+    - git -c 'credential.helper=!f() { test "$1" = get && printf "username=%s\npassword=%s\n" "${CODEREVIEW_AGENT_CLONE_USER:-oauth2}" "$CODEREVIEW_AGENT_CLONE_TOKEN"; }; f' clone --depth 1 --branch "$CODEREVIEW_AGENT_REF" "${SCHEME}://${SERVER}/${CODEREVIEW_AGENT_PATH}.git" .codereview-agent
     - python -m pip install -r .codereview-agent/requirements.txt
     - python -m pip install --no-deps -e .codereview-agent
 

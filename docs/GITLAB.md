@@ -16,22 +16,26 @@ GitHub 与 GitLab 共用同一套 review pipeline、LLM、缓存和发布语义�
 
 | 凭证 | scope / 角色 | 评论身份 | 用途 |
 |---|---|---|---|
-| Personal Access Token (PAT) | `api` + `write_repository` | 用户本人 | 跨仓库 CLI / CI / webhook；最省事 |
-| Project Access Token | `api`，Developer+ | `project_<id>_bot_<hash>` | 单项目 CI，评论像机器人 |
+| Personal Access Token (PAT) | `api` + `write_repository` | 用户本人 | 本地 bootstrap / CLI / webhook；**不要放进不可信项目的 CI** |
+| Project Access Token | `api`，Developer+ | `project_<id>_bot_<hash>` | 单项目 CI 评审（推荐） |
 | Group Access Token | `api`，Maintainer+ | `group_<id>_bot_<hash>` | group 下多仓库一次覆盖 |
 | Deploy Token | `read_repository` / `read_registry` | — | **只能读**；不能发评论，仅用于 CI 克隆 agent 仓库 |
 | CI_JOB_TOKEN | 受限 API | — | **不能发 MR notes**，不要用于评审 |
 
 推荐拆成两个变量：
 
-- `CODEREVIEW_GITLAB_TOKEN`：评审用 PAT / project token（`api`），只发评论。
+- `CODEREVIEW_GITLAB_TOKEN`：评审用 **project access token**（`api`），只发评论。
 - `CODEREVIEW_AGENT_CLONE_USER` + `CODEREVIEW_AGENT_CLONE_TOKEN`：agent 项目的
-  deploy token（`read_repository`），只用于 CI 克隆私有 agent 仓库。
+  deploy token（`read_repository`），只用于 CI 克隆私有 agent 仓库；模板要求必填，
+  **不会回退**到评审 token。
 
 `GITLAB_TOKEN` 是服务端/CLI 读取的变量名；CI 模板会把
 `CODEREVIEW_GITLAB_TOKEN` 映射过去。Token 只从环境变量或临时文件读，不写日志、
 不写入仓库。
 
+**CI 变量信任模型**：GitLab 项目 CI 变量对任何能修改 `.gitlab-ci.yml` 或运行
+pipeline 的人都可见。因此 CI 评审 token 必须用 **project access token**（作用域
+仅限该项目），并限制谁能 push/run pipeline；不要在不可信项目里使用个人 PAT。
 CI/CD 变量用 **masked、非 protected**：protected 变量在 feature branch 的 MR
 pipeline 里不可见。masked 值需满足 GitLab 的单行/Base64 字符集约束；URL、模型名
 这类非密钥变量不要 masked。
@@ -78,7 +82,7 @@ python -I -X utf8 -m codereview.cli \
 ```yaml
 include:
   - project: huajielong/codereview-agent
-    ref: main
+    ref: v0.1.0          # pin the same tag as CODEREVIEW_AGENT_REF
     file: /ci/gitlab-codereview.yml
 ```
 
@@ -86,19 +90,24 @@ include:
 `huajielong/codereview-agent`（私有项目至少 Reporter）。外部仓库无法访问时，
 用 `docs/gitlab-codereview.example.yml` 复制版，或改用 webhook 服务。
 
+不要把 `ref` 指向可变分支（`main`/`master`）后直接执行：那等于把上游最新提交
+变成你 CI 里的代码。模板默认 `CODEREVIEW_AGENT_REF=v0.1.0`，并拒绝 `main`/
+`master`，除非显式设 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。`include.ref` 与
+`CODEREVIEW_AGENT_REF` 要指向同一个 tag。
+
 ### 3.2 目标仓库需要配置的变量
 
 | 变量 | 说明 |
 |---|---|
-| `CODEREVIEW_GITLAB_TOKEN` | 评审 token（`api`），必填 |
-| `CODEREVIEW_AGENT_CLONE_TOKEN` | agent 项目 deploy token（`read_repository`）；不填则回退用 `CODEREVIEW_GITLAB_TOKEN` |
+| `CODEREVIEW_GITLAB_TOKEN` | 评审 **project access token**（`api`），必填；不要用个人 PAT |
+| `CODEREVIEW_AGENT_CLONE_TOKEN` | agent 项目 deploy token（`read_repository`），**必填**；不会回退到评审 token |
 | `CODEREVIEW_AGENT_CLONE_USER` | deploy token 用户名；用 PAT 时填 `oauth2` |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | LLM |
 | `COHERE_API_KEY` / `COHERE_EMBED_MODEL` | 可选 embedding |
 | `CODEREVIEW_MODE` | `security`（默认）/ `general` / `pattern` / `ensemble` |
 | `CODEREVIEW_CONTEXT_ENABLED` / `..._DEPENDENCY_ENABLED` / `..._HISTORY_ENABLED` | 默认 true |
 | `CODEREVIEW_PYTHON_IMAGE` | 默认 `python:3.11`；可换国内镜像 |
-| `CODEREVIEW_AGENT_REF` | 默认 `main`；生产建议 pin tag/branch（clone 用 `--branch`，裸 commit SHA 不适用） |
+| `CODEREVIEW_AGENT_REF` | 默认 `v0.1.0`；必须与 `include.ref` pin 同一个 tag。`main`/`master` 需 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true` |
 
 job 默认在 `test` stage；如果目标仓库使用自定义 stages，在包含模板后覆盖
 `codereview.stage` / `codereview-push-audit.stage`，或确保 `stages` 里有 `test`。
@@ -116,9 +125,12 @@ job 默认在 `test` stage；如果目标仓库使用自定义 stages，在包�
   clone 到 `.codereview-agent`。
 - 不传 `--head-sha`：由 `get_pull` 取当前 head，发布时再做一次 stale check，
   避免 merged-results pipeline 的 SHA 语义差异。
+- agent 仓库用 Git credential helper clone；`CODEREVIEW_AGENT_CLONE_TOKEN` 不会
+  出现在 URL、`.git/config` 或进程参数里。
 - 状态缓存 `.codereview-state/` + `resource_group: codereview-$CI_PROJECT_ID`
-  串行化，避免 SQLite/Chroma 并发。代价是同一项目不同 MR 的 pipeline 会排队；
-  这是为了跨 MR 复用 embedding/review cache。
+  串行化，避免 SQLite/Chroma 并发；cache key 含 `$CI_COMMIT_REF_SLUG`，按分支/MR
+  隔离，防止低权限分支写坏 main 的 review state/pip cache。代价是同一项目不同 MR
+  的 pipeline 会排队，且默认不跨 MR 复用 review/embedding cache。
 - `codereview` job 失败 → pipeline 失败。项目设置 **Merge requests → Merge checks
   → Pipelines must succeed** 即可作为合并门禁。GitLab Free 没有 GitHub 那种
   “按 job 名 required check”；需要更细的外部状态检查是 Ultimate 功能。
@@ -131,7 +143,8 @@ job 默认在 `test` stage；如果目标仓库使用自定义 stages，在包�
 
 `docs/gitlab-codereview.example.yml` 与 `ci/gitlab-codereview.yml` 内容一致，只是
 不依赖 `include:project`。复制到目标仓库的 `.gitlab-ci.yml` 后仍需
-`CODEREVIEW_AGENT_CLONE_TOKEN`（或 PAT）才能 clone 私有 agent 仓库。
+**必填**的 `CODEREVIEW_AGENT_CLONE_TOKEN`（`read_repository` deploy token）才能
+clone 私有 agent 仓库；不能回退用评审 token。
 
 ---
 
@@ -150,13 +163,19 @@ GITLAB_TOKEN=glpat-...
 GITLAB_WEBHOOK_SIGNING_SECRET=whsec_...   # 推荐
 # 或（仅当没有 signing secret 时）
 GITLAB_WEBHOOK_SECRET=change-me
+WEBHOOK_RATE_LIMIT=120
+WEBHOOK_RATE_WINDOW=60
+WEBHOOK_MAX_BYTES=5242880
 ```
 
 - 项目/群组 webhook URL：`https://<公网主机>/webhook/gitlab`
 - 事件：只勾选 **Merge request events**（push 审计走 CI；服务当前不处理 Push Hook）
 - GitLab 必须能访问该 HTTPS 地址；localhost 不行。开发时可用隧道。
-- 群组 webhook 可用一个 PAT/group token 覆盖群组内多个项目；PAT 需要对这些项目有
-  访问权（至少 Developer 才能发评论）。
+- 群组 webhook 可用 project/group access token 覆盖群组内多个项目；token 需要对这些
+  项目有访问权（至少 Developer 才能发评论）。个人 PAT 只用于本地 bootstrap。
+- `/webhook` 与 `/webhook/gitlab` 在验签前按客户端 IP 限流（默认 120 次/60s，
+  超出 429），并限制请求体大小（默认 5 MiB，超出 413）。这是单进程内的保护；
+  公网部署仍建议在前面加 WAF/反向代理。
 
 ### 4.2 验签
 
@@ -213,6 +232,9 @@ GITLAB_WEBHOOK_SECRET=change-me
 - 单条 discussion 位置失效（400/422）会记日志并跳过，summary 仍包含该 finding。
 - 发布前重新取 MR：若 head 已推进或 MR 已关闭/合并，返回 409，**什么都不发**；
   下一次 webhook/CI 会评审新 head。这是 fail-closed，避免把旧 findings 锚到新 head。
+- 凭据不会跟随跨域 redirect：`PRIVATE-TOKEN` 只在同源请求上发送；分页
+  `Link` 必须是同源，否则 502；archive 跳到对象存储时去掉 token 再跟随（签名 URL
+  本来就带授权）。
 - diff 完整性：
   - 主路径 `GET .../diffs?unidiff=true`，能暴露 `too_large`/`collapsed`；
   - 兜底 `GET .../raw_diffs`（旧实例），用 `changes_count` 交叉校验文件数；
@@ -235,7 +257,8 @@ GITLAB_API_URL=https://gitlab.example.com/api/v4
 ```
 
 - `GITLAB_BASE_URL` 用于 repo 身份（`gitlab.example.com/group/project`）和默认
-  API 地址；`GITLAB_API_URL` 用于带路径前缀的实例。
+  API 地址；`GITLAB_API_URL` 用于带路径前缀的实例。两者默认必须是 `https://`；
+  明文 `http://` 只允许 localhost/127.0.0.1/::1（本地开发）。
 - CI 模板用 `CI_SERVER_URL` 自动适配；`include:project` 在同实例内工作。
 - 自签证书需要在 runner/服务端信任；webhook 的 SSL verification 按需配置。
 
@@ -251,7 +274,9 @@ GITLAB_API_URL=https://gitlab.example.com/api/v4
 | `409 stale head` | 评审期间 MR 又推了 commit；下一次 pipeline/webhook 会重评 |
 | `409 MR diff is not ready` | MR 刚创建，diff 尚未生成；重跑 pipeline 或等 webhook 重试 |
 | `413 truncated` | 大 MR 超过 GitLab diff 限制；拆小 MR，或显式设 `GITLAB_ALLOW_TRUNCATED_DIFF=true` |
-| `429` | GitLab API 限流；客户端按 `Retry-After`/`RateLimit-Reset` 退避 |
+| `413 payload too large` | webhook body 超过 `WEBHOOK_MAX_BYTES`；确认不是异常 payload |
+| `429` | GitLab API 限流；客户端按 `Retry-After`/`RateLimit-Reset` 退避。webhook 端 429 表示本地 IP 限流 |
+| `502 refusing cross-origin redirect/link` | GitLab API/分页返回了跨域 URL；检查实例/代理配置，不要放宽同源校验 |
 | CI 拿不到变量 | 变量是否 masked 且 **非 protected**；是否 fork MR；是否在正确项目/群组 |
 | `include:project` 失败 | 触发用户对 agent 项目是否有 Reporter 权限 |
 | webhook 一直 401 | signing secret 是否配了但请求只带 legacy token（不会降级）；时间戳是否偏差 >300s |
