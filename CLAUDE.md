@@ -44,7 +44,7 @@ python -I -X utf8 -m pytest tests/test_publisher.py -q
 python -I -X utf8 -m pytest tests/test_factory.py -q
 ```
 
-当前 101 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
+当前 103 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub` / `FakeGitLab`，不要把真实 key
 或网络调用带进测试。
 
@@ -102,8 +102,9 @@ docker compose up -d --build
 enforce_config=False, start_workers=False)` 用于测试。
 
 GitLab webhook 的验签、事件映射、CI 模板和 token 说明见 `docs/GITLAB.md`。
-signing secret 配置后**不会降级**接受 legacy `X-Gitlab-Token`；GitLab 发布是
-inline discussion 先发、summary note 最后发，逐条带 marker 以支持崩溃重试去重。
+signing secret 配置后**不会降级**接受 legacy `X-Gitlab-Token`；GitLab 发布采用
+两阶段 summary：先创建 pending summary note，再发 inline discussion，最后编辑为
+最终 summary，逐条带 marker 以支持崩溃重试去重。
 
 ### 上线前自检
 
@@ -243,9 +244,12 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 - 发布前查 SQLite `posted_reviews`，再查远程已有 review/note 的 marker；命中就跳过。
 - 只有 `valid_line_map` 里的 diff 新增行才发 inline comment；其余进摘要，仍带 `file:line`。
 - GitHub 422（行号失效）时自动降级为“只发摘要”，不整次失败。
-- GitLab 没有原子 review 对象：**inline discussion 先发、summary note 最后发**；每条
-  inline 带 `<!-- codereview-inline:<fingerprint>:<index> -->`，重试时扫描
-  discussions 只补缺失。summary 成功后才 `mark_posted`。详见 `docs/GITLAB.md`。
+- GitLab 没有原子 review 对象：先创建带
+  `<!-- codereview-pending:<fingerprint> -->` 的 pending summary note，再发
+  inline；每条 inline 带 `<!-- codereview-inline:<fingerprint>:<index> -->`；最后
+  `PUT` 更新 pending note 为带 `<!-- codereview:<fingerprint> -->` 的最终 summary。
+  重试复用 pending note，只补缺失 inline；最终 summary 成功后才 `mark_posted`。
+  详见 `docs/GITLAB.md`。
 - `REVIEW_POST_EMPTY_SUMMARY=true` 时 0 finding 也发一条 “No issues found”；否则 0 finding 不发（此时 `completed` + `posted=false` 是设计，不是故障）。
 
 ### GitHub Actions

@@ -242,13 +242,18 @@ WEBHOOK_MAX_BYTES=5242880
 
 ## 5. 评审与发布语义（与 GitHub 的差异）
 
-- GitLab 没有 GitHub Review 那种“摘要 + N 条行内评论”的原子对象。发布顺序是
-  **先逐条 inline discussion，最后发 summary note**：
-  - 每条 inline 带 `<!-- codereview-inline:<fingerprint>:<index> -->`；
-  - summary 带现有 `<!-- codereview:<fingerprint> -->`；
-  - 重试时先扫描 discussions，跳过已发布的 inline，只补缺失，再发 summary；
-  - summary 成功后才写 DB `posted_reviews`。
-  这样中途崩溃不会重复评论，也不会永久缺 summary。
+- GitLab 没有 GitHub Review 那种“摘要 + N 条行内评论”的原子对象。发布采用
+  **两阶段 summary**，让 summary 停在 MR 时间线顶部：
+  - 先创建 pending summary note（可见提示 “AI code review in progress”），带
+    `<!-- codereview-pending:<fingerprint> -->`；
+  - 再逐条发 inline discussion，每条带
+    `<!-- codereview-inline:<fingerprint>:<index> -->`；
+  - 最后 `PUT .../notes/<id>` 把 pending note 更新为最终 summary，带
+    `<!-- codereview:<fingerprint> -->`；
+  - 重试时先扫描 notes 找同一 fingerprint 的 pending note（没有才创建），再扫描
+    discussions 跳过已发布的 inline，只补缺失；
+  - 最终 summary 更新成功后才写 DB `posted_reviews`。
+  这样 summary 在页面顶部，中途崩溃也不会重复评论，也不会永久缺 summary。
 - summary 是普通 MR note，不是 GitLab “review/approval”；GitLab 的 Approve API
   没有接入。
 - 行内评论只支持**新增行**（`position[new_line]`）；旧侧/上下文行 finding 落 summary
