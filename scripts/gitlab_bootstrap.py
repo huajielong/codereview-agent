@@ -1,7 +1,9 @@
 """Bootstrap the private GitLab project, push main, and configure CI variables.
 
-Never prints secret values. The PAT is read from ``GITLAB_TOKEN``; the script
-only reports key names and whether they are masked.
+Never prints secret values. The bootstrap PAT is read from ``GITLAB_TOKEN``; a
+separate review token is read from ``--review-token`` / ``--review-token-file``
+and written as ``CODEREVIEW_GITLAB_TOKEN``. The script only reports key names
+and whether they are masked.
 
 Examples::
 
@@ -13,7 +15,8 @@ Examples::
       --project huajielong/codereview-agent \
       --target-project huajielong/demo \
       --from-env-file /tmp/codereview-ci.env \
-      --create-deploy-token --set-review-token
+      --create-deploy-token --set-review-token \
+      --review-token-file /tmp/codereview-review-token
 
 The outward-facing actions (project creation, push, variables, deploy token)
 are intentional; pass ``--yes`` to skip the confirmation prompt.
