@@ -7,7 +7,13 @@ from urllib.parse import unquote
 import httpx
 import pytest
 
-from scripts.gitlab_bootstrap import _check, create_deploy_token, ensure_project, set_variable
+from scripts.gitlab_bootstrap import (
+    _check,
+    create_deploy_token,
+    ensure_project,
+    main,
+    set_variable,
+)
 
 
 def client(handler) -> httpx.Client:
@@ -85,6 +91,53 @@ def test_set_variable_masks_secret_keys():
 
     assert seen[0]["masked"] is True
     assert seen[1]["masked"] is False
+
+
+def test_set_variable_can_be_protected():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(201, json={"key": "CODEREVIEW_GITLAB_TOKEN"})
+
+    c = client(handler)
+    try:
+        set_variable(c, 9, "CODEREVIEW_GITLAB_TOKEN", "glpat-secret", protected=True)
+    finally:
+        c.close()
+
+    assert seen[0]["protected"] is True
+    assert seen[0]["masked"] is True
+
+
+def test_set_review_token_requires_separate_token(monkeypatch):
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-bootstrap")
+    assert main(["--set-review-token", "--yes"]) == 2
+
+
+def test_review_token_file_missing_returns_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-bootstrap")
+    missing = tmp_path / "missing-token"
+    assert main([
+        "--set-review-token",
+        "--review-token-file",
+        str(missing),
+        "--yes",
+    ]) == 2
+
+
+def test_review_token_and_file_are_mutually_exclusive(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-bootstrap")
+    token_file = tmp_path / "review-token"
+    token_file.write_text("glpat-review", encoding="utf-8")
+    assert main([
+        "--set-review-token",
+        "--review-token",
+        "glpat-review",
+        "--review-token-file",
+        str(token_file),
+        "--yes",
+    ]) == 2
 
 
 def test_redirects_are_rejected_not_followed():

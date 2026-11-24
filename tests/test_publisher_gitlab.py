@@ -125,9 +125,19 @@ def test_publisher_does_not_retry_gitlab_failure_as_summary(settings):
 class GitLabStub:
     """Stateful MockTransport handler for create_review."""
 
-    def __init__(self, *, state="opened", head=HEAD, notes_status=201, discussion_status=201):
+    def __init__(
+        self,
+        *,
+        state="opened",
+        head=HEAD,
+        heads=None,
+        notes_status=201,
+        discussion_status=201,
+    ):
+        self.heads = list(heads) if heads else [head]
+        self._mr_gets = 0
         self.mr = mr_payload(state=state, diff_refs={
-            "base_sha": "base", "head_sha": head, "start_sha": "start"
+            "base_sha": "base", "head_sha": self.heads[0], "start_sha": "start"
         })
         self.notes_status = notes_status
         self.discussion_status = discussion_status
@@ -140,6 +150,14 @@ class GitLabStub:
         method = request.method
         self.calls.append((method, path))
         if method == "GET" and path.endswith(f"/merge_requests/{NUMBER}"):
+            current_head = self.heads[min(self._mr_gets, len(self.heads) - 1)]
+            self._mr_gets += 1
+            self.mr["sha"] = current_head
+            self.mr["diff_refs"] = {
+                "base_sha": "base",
+                "head_sha": current_head,
+                "start_sha": "start",
+            }
             return httpx.Response(200, json=self.mr)
         if method == "GET" and path.endswith("/discussions"):
             return httpx.Response(200, json=self.discussions)
@@ -252,6 +270,41 @@ def test_create_review_invalid_position_does_not_fail_summary():
     assert result["inline_posted"] == 0
     assert result["inline_skipped"] == 1
     assert any(call[1].endswith("/notes") for call in stub.calls)
+
+
+@pytest.mark.parametrize("status", [401, 409])
+def test_create_review_inline_non_position_error_fails_closed(status):
+    stub = GitLabStub(discussion_status=status)
+    client = make_client(stub)
+    with pytest.raises(GitLabAPIError) as exc:
+        client.create_review(
+            "group/proj",
+            NUMBER,
+            commit_id=HEAD,
+            body=SUMMARY,
+            comments=[{"path": "app.py", "line": 2, "side": "RIGHT", "body": "finding"}],
+        )
+
+    assert exc.value.status == status
+    assert not any(call[1].endswith("/notes") for call in stub.calls)
+
+
+def test_create_review_rechecks_head_before_summary():
+    stub = GitLabStub(heads=[HEAD, "new-head"])
+    client = make_client(stub)
+    with pytest.raises(GitLabAPIError) as exc:
+        client.create_review(
+            "group/proj",
+            NUMBER,
+            commit_id=HEAD,
+            body=SUMMARY,
+            comments=[{"path": "app.py", "line": 2, "side": "RIGHT", "body": "finding"}],
+        )
+
+    assert exc.value.status == 409
+    posts = [call for call in stub.calls if call[0] == "POST"]
+    assert any(call[1].endswith("/discussions") for call in posts)
+    assert not any(call[1].endswith("/notes") for call in posts)
 
 
 def test_create_review_stale_head_sends_nothing():

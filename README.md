@@ -48,7 +48,7 @@ GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITL
 
 ## 验证状态（2026-11-24）
 
-- 离线：86 个测试通过；`compileall`、wheel 构建通过。
+- 离线：93 个测试通过；`compileall`、wheel 构建通过。
 - GitHub：PR #7 的 `review` self-review check 在提交 `700ef7e` 上通过（16m42s）；
   `push-audit` 在 PR 上按设计 skipped。本文档更新会触发一次新的 review check。
 - GitLab：`huajielong/codereview-agent` MR !1 已合并，`main` 的 verify pipeline
@@ -162,8 +162,11 @@ agent 自审 PR 会红。
 完整的变量表、signing token 校验、fork MR 限制、缓存/配额和排错见
 [`docs/GITLAB.md`](docs/GITLAB.md)。`scripts/gitlab_bootstrap.py` 可幂等创建私有
 项目、推送分支、创建 `read_repository` deploy token 并写入 masked CI 变量（不打印
-secret）。GitLab 没有 GitHub Review 的原子对象：发布顺序是 inline discussion 先发、
-summary note 最后发，逐条带 marker 以支持崩溃后重试去重；summary 成功后才算发布完成。
+secret）。`--set-review-token` 需要另给 `--review-token` / `--review-token-file`
+（project access token）；只有显式 `--allow-pat-as-review-token` 才允许把 bootstrap
+PAT 写进目标项目。GitLab 没有 GitHub Review 的原子对象：发布顺序是 inline
+discussion 先发、summary note 最后发，逐条带 marker 以支持崩溃后重试去重；summary
+成功后才算发布完成。
 
 ## 评审模式
 
@@ -211,10 +214,11 @@ PR/分支，不能保证跨 PR 复用；仓库没有 artifact 或 `codereview-st
 转存 workflow。
 
 GitLab CI 模板把 `DATABASE_PATH/CHROMA_PATH/CACHE_DIR/history/audit` 统一放在
-`.codereview-state/`，cache key 含 `$CI_COMMIT_REF_SLUG`，**按分支/MR 隔离**，
-避免分支写坏 main 的 review state/pip cache；`resource_group` 仍按项目串行化，
-避免 SQLite/Chroma 并发。代价是默认不跨 MR 复用 review/embedding cache。GitLab 的
-cache 是尽力而为，不是强一致存储。
+`.codereview-state/`，cache key 含 `$CI_COMMIT_REF_SLUG`、`$CI_COMMIT_REF_PROTECTED`
+和 `$CI_MERGE_REQUEST_IID`，**按分支/MR 隔离**，避免分支（包括大小写归一后与
+`main` 撞 slug 的 `Main`）写坏 main 的 review state/pip cache；`resource_group`
+仍按项目串行化，避免 SQLite/Chroma 并发。代价是默认不跨 MR 复用
+review/embedding cache。GitLab 的 cache 是尽力而为，不是强一致存储。
 
 历史 finding 检索（`REVIEW_HISTORY_ENABLED=true`）会在成功发布后把 findings
 追加到 `REVIEW_HISTORY_PATH`，按 `(repo, pr, file, line, issue)` 去重，最多保留
@@ -236,6 +240,9 @@ cache 是尽力而为，不是强一致存储。
 - GitLab diff 被截断（`too_large`/`collapsed`/`changes_count` 不匹配）或
   `compare_timeout` 时默认 413 fail closed；`GITLAB_ALLOW_TRUNCATED_DIFF=true`
   才继续并在 summary 顶部标注未审文件。发布前 head 变化则 409，不发任何内容。
+- GitLab inline 评论 400/422（位置失效）会跳过并记日志；401/403/409/429/5xx
+  会中止整次发布，不写 summary。写 summary 前会再次检查 MR head，避免把旧
+  findings 锚到新 head。
 - 大 diff 分块；任一 chunk 的 LLM 调用失败时，默认整次不发布
   （`REVIEW_POST_ON_PARTIAL=false`），避免漏掉的那一块看起来没问题。
 
@@ -317,11 +324,13 @@ general 还要 `{instructions}`），字面花括号写成 `{{` / `}}`。格式�
 - GitHub Actions 的缓存按 PR/分支作用域，不同 PR 之间不保证复用；同一 PR 的并发
   run 由 `concurrency` 取消，不会并行写同一份状态。
 - GitLab CI 的 `resource_group` 按项目串行化；同项目不同 MR 的 pipeline 会排队。
-  cache key 按 ref 隔离，默认不跨 MR 复用。fork MR 的 CI 模式不支持（拿不到目标
-  项目变量），改用 webhook 服务。
+  cache key 按 ref + protected + MR IID 隔离，默认不跨 MR 复用。fork MR 的 CI
+  模式不支持（拿不到目标项目变量），改用 webhook 服务。
 - GitLab CI 变量对任何能修改 `.gitlab-ci.yml`/运行 pipeline 的人可见；因此评审
   token 用 **project access token**、限制谁能 push/run pipeline，不要用个人 PAT。
-  agent clone 必须用独立 `read_repository` deploy token。
+  agent clone 必须用独立 `read_repository` deploy token。只跑保护分支/tag 的
+  push 审计可用 `gitlab_bootstrap.py --protected-variables`，但 feature branch 的
+  MR pipeline 会拿不到 token。
 - GitLab 行内评论只支持新增行；旧侧/上下文行 finding 落 summary。GitLab 没有
   commit status / approval 回写；CI 用 job 退出码，webhook 用 MR note。
 - GitLab webhook 真机需要一个 GitLab 能访问的公网 HTTPS 地址；本仓库未配置，

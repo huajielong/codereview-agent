@@ -44,7 +44,7 @@ python -I -X utf8 -m pytest tests/test_publisher.py -q
 python -I -X utf8 -m pytest tests/test_factory.py -q
 ```
 
-当前 86 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
+当前 93 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub` / `FakeGitLab`，不要把真实 key
 或网络调用带进测试。
 
@@ -294,13 +294,16 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 - diff 主路径 `/diffs?unidiff=true`，兜底 `/raw_diffs`；`too_large`/`collapsed`/
   `changes_count` 不匹配/`compare_timeout` 默认 **413 fail closed**，
   `GITLAB_ALLOW_TRUNCATED_DIFF=true` 才继续并在 summary 标注。
-- 发布前重新取 MR；head 变化或 MR 不再 open → 409，不发任何内容。
+- 发布前和写 summary 前都重新取 MR；head 变化或 MR 不再 open → 409，不写 summary。
+  单条 inline 只有 400/422（位置失效）会跳过；401/403/409/429/5xx 会中止整次发布。
 - repo 身份：GitLab 一律 `<host>/<path>`（如 `gitlab.com/group/project`），GitHub
   保持 `owner/repo`；共用 DB 但键不冲突。`repo_allowed` 对带 host 的 GitLab repo
   允许裸 `group/project` allowlist，GitHub 仍精确匹配。
 - CI 的 `resource_group` 按项目串行化，避免 SQLite/Chroma 并发；cache key 含
-  `$CI_COMMIT_REF_SLUG`，按分支/MR 隔离，防止低权限分支写坏 main 的 state/pip
-  cache（代价：默认不跨 MR 复用）。fork MR 的 CI 模式不支持，改用 webhook。
+  `$CI_COMMIT_REF_SLUG`、`$CI_COMMIT_REF_PROTECTED` 和 `$CI_MERGE_REQUEST_IID`，
+  按分支/MR 隔离，防止低权限分支（包括大小写归一后与 `main` 撞 slug 的 `Main`）
+  写坏 main 的 state/pip cache（代价：默认不跨 MR 复用）。fork MR 的 CI 模式不
+  支持，改用 webhook。
 - CI 模板强制 `CODEREVIEW_AGENT_CLONE_TOKEN`（`read_repository` deploy token），
   不再回退到 `api` 评审 token；clone 用 Git credential helper，token 不进入 URL、
   `.git/config` 或进程参数。`CODEREVIEW_AGENT_REF` 默认 `v0.1.0`，`main`/`master`
@@ -310,6 +313,10 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 - `scripts/gitlab_bootstrap.py`：幂等创建私有项目、`--push` 分支、创建
   `read_repository` deploy token、写 masked CI 变量；不打印 secret。个人 namespace
   创建时不能传 `namespace_id`（GitLab.com 会报 `organization_id` nil）。
+  `--set-review-token` 必须另给 `--review-token`/`--review-token-file`（project
+  access token）；只有显式 `--allow-pat-as-review-token` 才允许写入 bootstrap PAT。
+  `--protected-variables` 只适合保护分支/tag 的 push 审计，feature branch 的 MR
+  pipeline 会拿不到 token。
 - **真机验证（2026-11-24）**：`huajielong/codereview-agent` MR !1 已合并，`main`
   verify pipeline 成功；`huajielong/codereview-demo` MR !1 的 `codereview` job 成功，
   首次 head 发布 summary + `app.py:6` inline discussion，重试 job 后 1/1 不变；
@@ -341,9 +348,11 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 10. **测试不联网**：新增测试用 `FakeLLM`/`FakeGitHub`/`FakeGitLab`，不要依赖真实 key、真实 GitHub/GitLab 或 Cohere。
 11. **GitLab token 分权**：CI clone 用 deploy token（`read_repository`），评审用
     PAT/project token（`api`）；不要把高权限 PAT 放进 clone URL。CI 变量 masked、
-    非 protected。`CI_JOB_TOKEN` 不能发 MR notes。
-12. **GitLab 截断/竞态默认 fail closed**：413（diff 截断）和 409（MR 已推进）不是
-    可忽略的警告；不要改成继续发布半份评审。
+    非 protected（MR pipeline 需要；只跑保护分支/tag 才用 `--protected-variables`）。
+    `CI_JOB_TOKEN` 不能发 MR notes。bootstrap 写评审 token 必须用单独的
+    `--review-token`/`--review-token-file`，不要默认复用 bootstrap PAT。
+12. **GitLab 截断/竞态默认 fail closed**：413（diff 截断）、409（MR 已推进）以及
+    inline 的 401/403/429/5xx 都不是可忽略的警告；不要改成继续发布半份评审。
 13. **指标口径**：默认 keyword；`--match hybrid` 必须同时报告 keyword-only。L6 出现过两种口径方向相反；不要只报 hybrid。
 14. **dependency/history 是增强，不是保证**：dependency 支持单仓库 Python import、C/C++ 本地 `#include "..."`、JS/TS 相对 import/require；C/C++ 不处理宏/条件编译，JS/TS 不处理 `tsconfig` 别名，跨语言 API 依赖不在范围内。history 是关键词重叠检索，从空开始，可能把模型引向旧问题。不要把它们写成“已验证提升准确率”。
 15. **Chroma 不可用时回退内存索引**（`factory._make_store`），这时跨进程不共享；日志里会有 `chroma_unavailable_fallback_memory`。
@@ -354,7 +363,8 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
     公网端点验签前必须先限流和限大小。
 19. **GitLab CI token 分权 + ref pin + per-ref cache**：clone 只用 deploy token，
     评审用 project access token；`CODEREVIEW_AGENT_REF`/`include.ref` pin 同一个 tag；
-    cache key 含 `$CI_COMMIT_REF_SLUG`，不要改回项目级共享 key。
+    cache key 含 `$CI_COMMIT_REF_SLUG`、`$CI_COMMIT_REF_PROTECTED` 和
+    `$CI_MERGE_REQUEST_IID`，不要改回项目级共享 key。
 
 ## 参考文档
 

@@ -40,6 +40,17 @@ CI/CD 变量用 **masked、非 protected**：protected 变量在 feature branch 
 pipeline 里不可见。masked 值需满足 GitLab 的单行/Base64 字符集约束；URL、模型名
 这类非密钥变量不要 masked。
 
+**接受的风险（CI 模式）**：只要 MR pipeline 需要评审 token，token 就对能修改
+`.gitlab-ci.yml` 或运行该分支 pipeline 的人可见；这是 GitLab CI 的信任模型，不是
+本仓库能消除的缺陷。缓解手段是 project access token（Developer 即可发 note）、
+限制 push/run pipeline 权限、保护默认分支；对不可信贡献者改用 webhook 服务。
+`gitlab_bootstrap.py` 默认写非 protected 变量；只跑保护分支/tag 的 push 审计时可用
+`--protected-variables`，但 feature branch 的 MR pipeline 将拿不到 token。
+
+`scripts/gitlab_bootstrap.py --set-review-token` 要求单独的
+`--review-token` / `--review-token-file`（project access token）；只有显式传
+`--allow-pat-as-review-token` 才会把 bootstrap PAT 写进目标项目 CI 变量。
+
 ---
 
 ## 2. CLI
@@ -128,9 +139,11 @@ job 默认在 `test` stage；如果目标仓库使用自定义 stages，在包�
 - agent 仓库用 Git credential helper clone；`CODEREVIEW_AGENT_CLONE_TOKEN` 不会
   出现在 URL、`.git/config` 或进程参数里。
 - 状态缓存 `.codereview-state/` + `resource_group: codereview-$CI_PROJECT_ID`
-  串行化，避免 SQLite/Chroma 并发；cache key 含 `$CI_COMMIT_REF_SLUG`，按分支/MR
-  隔离，防止低权限分支写坏 main 的 review state/pip cache。代价是同一项目不同 MR
-  的 pipeline 会排队，且默认不跨 MR 复用 review/embedding cache。
+  串行化，避免 SQLite/Chroma 并发；cache key 含 `$CI_COMMIT_REF_SLUG`、
+  `$CI_COMMIT_REF_PROTECTED` 和 `$CI_MERGE_REQUEST_IID`，按分支/MR 隔离，防止
+  低权限分支（包括大小写归一后与 `main` 撞 slug 的 `Main`）写坏 main 的
+  review state/pip cache。代价是同一项目不同 MR 的 pipeline 会排队，且默认不跨
+  MR 复用 review/embedding cache。
 - `codereview` job 失败 → pipeline 失败。项目设置 **Merge requests → Merge checks
   → Pipelines must succeed** 即可作为合并门禁。GitLab Free 没有 GitHub 那种
   “按 job 名 required check”；需要更细的外部状态检查是 Ultimate 功能。
@@ -229,9 +242,11 @@ WEBHOOK_MAX_BYTES=5242880
   没有接入。
 - 行内评论只支持**新增行**（`position[new_line]`）；旧侧/上下文行 finding 落 summary
   表格。新文件 `old_path=new_path`；重命名从 `/diffs` 元数据取 `old_path`。
-- 单条 discussion 位置失效（400/422）会记日志并跳过，summary 仍包含该 finding。
-- 发布前重新取 MR：若 head 已推进或 MR 已关闭/合并，返回 409，**什么都不发**；
-  下一次 webhook/CI 会评审新 head。这是 fail-closed，避免把旧 findings 锚到新 head。
+- 单条 discussion 位置失效（400/422）会记日志并跳过，summary 仍包含该 finding；
+  401/403/409/429/5xx 不会跳过，整次发布中止，不写 summary。
+- 发布前和写 summary 前都会重新取 MR：若 head 已推进或 MR 已关闭/合并，返回 409，
+  **不写 summary**；下一次 webhook/CI 会评审新 head。这是 fail-closed，避免把旧
+  findings 锚到新 head。
 - 凭据不会跟随跨域 redirect：`PRIVATE-TOKEN` 只在同源请求上发送；分页
   `Link` 必须是同源，否则 502；archive 跳到对象存储时去掉 token 再跟随（签名 URL
   本来就带授权）。

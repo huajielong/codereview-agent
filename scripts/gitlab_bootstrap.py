@@ -232,6 +232,26 @@ def main(argv: list[str] | None = None) -> int:
         help="set CODEREVIEW_GITLAB_TOKEN on target projects",
     )
     parser.add_argument(
+        "--review-token",
+        help="project access token to write as CODEREVIEW_GITLAB_TOKEN "
+        "(required with --set-review-token unless --allow-pat-as-review-token)",
+    )
+    parser.add_argument(
+        "--review-token-file",
+        help="file containing the review token (avoids exposing it in argv)",
+    )
+    parser.add_argument(
+        "--allow-pat-as-review-token",
+        action="store_true",
+        help="explicitly allow the bootstrap PAT to be written as CODEREVIEW_GITLAB_TOKEN",
+    )
+    parser.add_argument(
+        "--protected-variables",
+        action="store_true",
+        help="create CI variables as protected (unavailable to MR pipelines on "
+        "unprotected branches; use only for protected-branch-only setups)",
+    )
+    parser.add_argument(
         "--target-project",
         action="append",
         default=[],
@@ -255,6 +275,35 @@ def main(argv: list[str] | None = None) -> int:
     if not token:
         print("GITLAB_TOKEN is required (api + write_repository scope)", file=sys.stderr)
         return 2
+
+    if args.review_token and args.review_token_file:
+        print("use only one of --review-token / --review-token-file", file=sys.stderr)
+        return 2
+    if (args.review_token or args.review_token_file) and not args.set_review_token:
+        print("--review-token requires --set-review-token", file=sys.stderr)
+        return 2
+
+    review_token = ""
+    if args.review_token:
+        review_token = args.review_token.strip()
+    elif args.review_token_file:
+        try:
+            review_token = Path(args.review_token_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"cannot read --review-token-file: {exc}", file=sys.stderr)
+            return 2
+    if args.set_review_token:
+        if not review_token:
+            if not args.allow_pat_as_review_token:
+                print(
+                    "--set-review-token requires --review-token or "
+                    "--review-token-file; use a project access token. "
+                    "Pass --allow-pat-as-review-token only if you accept "
+                    "writing the bootstrap PAT into target CI variables.",
+                    file=sys.stderr,
+                )
+                return 2
+            review_token = token
 
     base_url = args.base_url.rstrip("/")
     remote_url = f"{base_url}/{args.project}.git"
@@ -294,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.from_env_file:
             extra.update(_read_env_file(Path(args.from_env_file)))
         if args.set_review_token:
-            extra["CODEREVIEW_GITLAB_TOKEN"] = token
+            extra["CODEREVIEW_GITLAB_TOKEN"] = review_token
 
         deploy = None
         if args.create_deploy_token:
@@ -310,7 +359,13 @@ def main(argv: list[str] | None = None) -> int:
                 target_project = ensure_project(client, target, args.visibility)
                 for key, value in extra.items():
                     if value:
-                        set_variable(client, target_project["id"], key, value)
+                        set_variable(
+                            client,
+                            target_project["id"],
+                            key,
+                            value,
+                            protected=args.protected_variables,
+                        )
                 print(f"configured variables for {target}")
         elif extra:
             print("no --target-project given; skipped CI variable setup")

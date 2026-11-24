@@ -45,8 +45,9 @@ variables:
     REVIEW_POST_ON_PARTIAL: "false"
     GITLAB_ALLOW_TRUNCATED_DIFF: "$CODEREVIEW_ALLOW_TRUNCATED_DIFF"
   cache:
-    # Per-ref key: a branch/MR cannot poison the cache used by main.
-    key: "codereview-state-$CI_PROJECT_ID-$CI_COMMIT_REF_SLUG"
+    # Per-ref key: protected status + MR IID keep a branch whose slug collides
+    # with the default branch (e.g. Main -> main) from poisoning main's state.
+    key: "codereview-state-$CI_PROJECT_ID-$CI_COMMIT_REF_SLUG-$CI_COMMIT_REF_PROTECTED-$CI_MERGE_REQUEST_IID"
     paths:
       - .codereview-state/
       - .cache/pip/

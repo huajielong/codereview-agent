@@ -709,6 +709,11 @@ class GitLabClient:
                     self._request("POST", f"{mr_url}/discussions", data=form)
                     posted += 1
                 except GitLabAPIError as exc:
+                    if exc.status not in (400, 422):
+                        # Auth, rate-limit, stale-head and 5xx errors must fail
+                        # closed: posting a summary would make the run look
+                        # complete while findings were silently dropped.
+                        raise
                     skipped += 1
                     log.warning(
                         "gitlab_inline_comment_skipped",
@@ -720,6 +725,30 @@ class GitLabClient:
                             "status": exc.status,
                         },
                     )
+
+            # A head advance during inline posting can make a position stale.
+            # Re-check before the summary so we never anchor old findings to a
+            # newer head; the next webhook/CI run will review the new head.
+            current = self._get_mr_raw(encoded, number)
+            current_state = str(current.get("state") or "")
+            current_refs = current.get("diff_refs") or {}
+            current_head = (
+                current_refs.get("head_sha") or current.get("sha") or ""
+            )
+            if current_state not in ("opened", "locked") or current.get("merged_at"):
+                raise GitLabAPIError(
+                    409,
+                    "merge request is no longer open before summary "
+                    f"(state={current_state!r})",
+                    mr_url,
+                )
+            if current_head and head_sha and current_head != head_sha:
+                raise GitLabAPIError(
+                    409,
+                    "stale head: the merge request advanced while inline "
+                    "comments were being posted",
+                    mr_url,
+                )
 
         response = self._request("POST", f"{mr_url}/notes", data={"body": body})
         payload = response.json()
