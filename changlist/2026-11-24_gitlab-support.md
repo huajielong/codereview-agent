@@ -61,12 +61,23 @@ python -m pip wheel . --no-deps -w dist
 python -I -X utf8 scripts/check_production.py --provider gitlab
 ```
 
-GitLab 真机待办（需要 PAT / demo 项目）：
+真机（2026-11-24，GitLab.com）：
 
-- agent 仓库 GitLab pipeline 绿。
-- demo MR：summary + inline、重跑幂等、半途崩溃只补缺失、stale head 409、
-  截断 413、错 token 时 job 红。
-- `/webhook/gitlab`：签名/legacy token、重复 delivery、label-only update 跳过。
+- agent 项目 `huajielong/codereview-agent`（private）：`main` +
+  `feat/gitlab-support` 已推送；MR !1 的 `verify` pipeline 成功。
+- demo 项目 `huajielong/codereview-demo`（private）：MR !1 的 `codereview`
+  job 成功；summary note（1 high，`app.py:6`）+ inline discussion（`app.py:6`）；
+  重试同一 job 后 summary=1、inline=1；`main` 的 `codereview-push-audit` 成功。
+- `/webhook/gitlab` 本地 uvicorn + 签名 curl：正确签名 202，错误签名 401，
+  配 signing secret 后 legacy token 401；job 行的 repo/pr/installation_id 正确。
+- `feat/gitlab-support` 已推到 GitHub `origin`。
+
+待办/未覆盖：
+
+- 真机 webhook 需要 GitLab 能访问的公网 HTTPS；目前用 TestClient + 本地 curl 覆盖。
+- stale head 409、truncated 413、半途崩溃只补缺失有单测，未做真机故障注入。
+- agent MR 合并后，把 demo 的 `ref`/`CODEREVIEW_AGENT_REF` 从
+  `feat/gitlab-support` 换成 `main`。
 - fork MR 的 CI 模式不支持；用 webhook 服务。
 
 ## 限制
