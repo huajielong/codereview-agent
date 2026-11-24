@@ -35,7 +35,9 @@
 - `factory.py` / `cli.py` / `scripts/run_review.py`：provider 选择与 repo 规范化。
 - `server/app.py`：`/webhook/gitlab`；按 provider 独立启用路由；delivery 前缀。
 - `scripts/check_production.py`：`--provider github|gitlab|both`。
-- `.github/workflows/codereview.yml`：CLI 显式 `--provider github`。
+- `.github/workflows/codereview.yml`：保持 CLI 默认 provider（github）。不能加
+  `--provider github`：GitHub Actions 从 PR base SHA 检出 agent 代码，base 版本的
+  CLI 不认识新参数，会在自审 PR 时直接退出 2。
 - `README.md`、`CLAUDE.md`、`.env.example`、`.gitignore`、`pyproject.toml`、
   `MANIFEST.in`。
 

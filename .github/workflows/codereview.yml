@@ -152,7 +152,6 @@ jobs:
           mkdir -p data
           touch data/history.jsonl
           python -I -X utf8 -m codereview.cli \
-            --provider github \
             --repo "$REPO" \
             --pr "$PR_NUMBER" \
             --post
@@ -228,7 +227,6 @@ jobs:
         run: |
           set +e
           python -I -X utf8 -m codereview.cli \
-            --provider github \
             --repo "$REPO" \
             --push \
             --before "$PUSH_BEFORE" \
