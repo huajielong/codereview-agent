@@ -44,7 +44,7 @@ python -I -X utf8 -m pytest tests/test_publisher.py -q
 python -I -X utf8 -m pytest tests/test_factory.py -q
 ```
 
-当前 93 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
+当前 100 个离线测试；不访问 GitHub/GitLab/LLM/Cohere。新增测试沿用
 `tests/conftest.py` 的 `FakeLLM` / `FakeGitHub` / `FakeGitLab`，不要把真实 key
 或网络调用带进测试。
 
@@ -303,11 +303,14 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
   `$CI_COMMIT_REF_SLUG`、`$CI_COMMIT_REF_PROTECTED` 和 `$CI_MERGE_REQUEST_IID`，
   按分支/MR 隔离，防止低权限分支（包括大小写归一后与 `main` 撞 slug 的 `Main`）
   写坏 main 的 state/pip cache（代价：默认不跨 MR 复用）。fork MR 的 CI 模式不
-  支持，改用 webhook。
+  支持，改用 webhook。**GitLab CI cache 不是安全边界**：能改 `.gitlab-ci.yml`
+  的人可以写任意 key；`codereview-push-audit` 用 `cache: []` +
+  `PIP_NO_CACHE_DIR=1`，agent 仓库的 `verify` 也不用 GitLab cache。
 - CI 模板强制 `CODEREVIEW_AGENT_CLONE_TOKEN`（`read_repository` deploy token），
   不再回退到 `api` 评审 token；clone 用 Git credential helper，token 不进入 URL、
-  `.git/config` 或进程参数。`CODEREVIEW_AGENT_REF` 默认 `v0.1.0`，`main`/`master`
-  需要显式 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。
+  `.git/config` 或进程参数。`CODEREVIEW_AGENT_REF` 默认 `v0.1.0`，只接受
+  `vX.Y.Z` 或完整 40 位 commit SHA；使用分支需要显式
+  `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。
 - `GITLAB_BASE_URL` / `GITLAB_API_URL` 必须是 `https://`；明文 `http://` 只允许
   localhost/127.0.0.1/::1。
 - `scripts/gitlab_bootstrap.py`：幂等创建私有项目、`--push` 分支、创建
@@ -316,7 +319,8 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
   `--set-review-token` 必须另给 `--review-token`/`--review-token-file`（project
   access token）；只有显式 `--allow-pat-as-review-token` 才允许写入 bootstrap PAT。
   `--protected-variables` 只适合保护分支/tag 的 push 审计，feature branch 的 MR
-  pipeline 会拿不到 token。
+  pipeline 会拿不到 token。`--base-url`/`GITLAB_BASE_URL` 只接受 HTTPS（localhost
+  例外）；`--from-env-file` 的 password/credential/private 键会自动 masked。
 - **真机验证（2026-11-24）**：`huajielong/codereview-agent` MR !1 已合并，`main`
   verify pipeline 成功；`huajielong/codereview-demo` MR !1 的 `codereview` job 成功，
   首次 head 发布 summary + `app.py:6` inline discussion，重试 job 后 1/1 不变；
@@ -362,9 +366,11 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 18. **Webhook 限流/body 上限不要删**（`WEBHOOK_RATE_LIMIT`/`WEBHOOK_MAX_BYTES`）；
     公网端点验签前必须先限流和限大小。
 19. **GitLab CI token 分权 + ref pin + per-ref cache**：clone 只用 deploy token，
-    评审用 project access token；`CODEREVIEW_AGENT_REF`/`include.ref` pin 同一个 tag；
-    cache key 含 `$CI_COMMIT_REF_SLUG`、`$CI_COMMIT_REF_PROTECTED` 和
-    `$CI_MERGE_REQUEST_IID`，不要改回项目级共享 key。
+    评审用 project access token；`CODEREVIEW_AGENT_REF`/`include.ref` pin 同一个
+    tag 或完整 40 位 SHA，分支需显式 opt-in；cache key 含
+    `$CI_COMMIT_REF_SLUG`、`$CI_COMMIT_REF_PROTECTED` 和
+    `$CI_MERGE_REQUEST_IID`，不要改回项目级共享 key。GitLab CI cache 不是安全
+    边界，protected push-audit 必须保持 `cache: []` + `PIP_NO_CACHE_DIR=1`。
 
 ## 参考文档
 

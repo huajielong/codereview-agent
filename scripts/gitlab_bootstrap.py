@@ -29,11 +29,27 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
-SECRET_HINTS = ("TOKEN", "KEY", "SECRET")
+SECRET_HINTS = (
+    "TOKEN",
+    "KEY",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "PRIVATE",
+)
+
+
+def _secure_base_url(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" or (
+        parsed.scheme == "http" and host in ("localhost", "127.0.0.1", "::1")
+    )
 
 
 def _client(base_url: str, token: str) -> httpx.Client:
@@ -309,6 +325,13 @@ def main(argv: list[str] | None = None) -> int:
             review_token = token
 
     base_url = args.base_url.rstrip("/")
+    if not _secure_base_url(base_url):
+        print(
+            "--base-url/GITLAB_BASE_URL must use https "
+            "(http only for localhost/127.0.0.1/::1)",
+            file=sys.stderr,
+        )
+        return 2
     remote_url = f"{base_url}/{args.project}.git"
     targets = list(args.target_project)
 

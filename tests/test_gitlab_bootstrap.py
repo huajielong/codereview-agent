@@ -9,6 +9,7 @@ import pytest
 
 from scripts.gitlab_bootstrap import (
     _check,
+    _secure_base_url,
     create_deploy_token,
     ensure_project,
     main,
@@ -91,6 +92,34 @@ def test_set_variable_masks_secret_keys():
 
     assert seen[0]["masked"] is True
     assert seen[1]["masked"] is False
+
+
+def test_set_variable_masks_password_keys():
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return httpx.Response(201, json={"key": "DB_PASSWORD"})
+
+    c = client(handler)
+    try:
+        set_variable(c, 9, "DB_PASSWORD", "secret-value")
+    finally:
+        c.close()
+
+    assert seen[0]["masked"] is True
+
+
+def test_secure_base_url_requires_https_except_localhost():
+    assert _secure_base_url("https://gitlab.com")
+    assert _secure_base_url("http://localhost:8080")
+    assert _secure_base_url("http://127.0.0.1:8080")
+    assert not _secure_base_url("http://gitlab.example.com")
+
+
+def test_bootstrap_rejects_cleartext_base_url(monkeypatch):
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-bootstrap")
+    assert main(["--base-url", "http://gitlab.example.com", "--yes"]) == 2
 
 
 def test_set_variable_can_be_protected():

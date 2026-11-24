@@ -50,6 +50,9 @@ pipeline 里不可见。masked 值需满足 GitLab 的单行/Base64 字符集约
 `scripts/gitlab_bootstrap.py --set-review-token` 要求单独的
 `--review-token` / `--review-token-file`（project access token）；只有显式传
 `--allow-pat-as-review-token` 才会把 bootstrap PAT 写进目标项目 CI 变量。
+脚本的 `--base-url` / `GITLAB_BASE_URL` 也只接受 HTTPS（localhost 例外）；
+`--from-env-file` 中 `*_PASSWORD`、`*_PASSWD`、`*_CREDENTIAL`、`*_PRIVATE*`
+等键会自动 masked。
 
 ---
 
@@ -101,10 +104,11 @@ include:
 `huajielong/codereview-agent`（私有项目至少 Reporter）。外部仓库无法访问时，
 用 `docs/gitlab-codereview.example.yml` 复制版，或改用 webhook 服务。
 
-不要把 `ref` 指向可变分支（`main`/`master`）后直接执行：那等于把上游最新提交
-变成你 CI 里的代码。模板默认 `CODEREVIEW_AGENT_REF=v0.1.0`，并拒绝 `main`/
-`master`，除非显式设 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。`include.ref` 与
-`CODEREVIEW_AGENT_REF` 要指向同一个 tag。
+不要把 `ref` 指向可变分支后直接执行：那等于把上游最新提交变成你 CI 里的代码。
+模板默认 `CODEREVIEW_AGENT_REF=v0.1.0`，只接受版本 tag（`vX.Y.Z`）或完整的
+40 位 commit SHA；值不能包含空白或换行。使用 `main`/`master`/`develop` 等分支
+必须显式设 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。`include.ref` 与
+`CODEREVIEW_AGENT_REF` 要指向同一个 tag 或 commit。
 
 ### 3.2 目标仓库需要配置的变量
 
@@ -118,7 +122,7 @@ include:
 | `CODEREVIEW_MODE` | `security`（默认）/ `general` / `pattern` / `ensemble` |
 | `CODEREVIEW_CONTEXT_ENABLED` / `..._DEPENDENCY_ENABLED` / `..._HISTORY_ENABLED` | 默认 true |
 | `CODEREVIEW_PYTHON_IMAGE` | 默认 `python:3.11`；可换国内镜像 |
-| `CODEREVIEW_AGENT_REF` | 默认 `v0.1.0`；必须与 `include.ref` pin 同一个 tag。`main`/`master` 需 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true` |
+| `CODEREVIEW_AGENT_REF` | 默认 `v0.1.0`；必须是 `vX.Y.Z` 或完整 40 位 commit SHA，并与 `include.ref` 指向同一个 tag/commit。使用分支需 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true` |
 
 job 默认在 `test` stage；如果目标仓库使用自定义 stages，在包含模板后覆盖
 `codereview.stage` / `codereview-push-audit.stage`，或确保 `stages` 里有 `test`。
@@ -144,6 +148,10 @@ job 默认在 `test` stage；如果目标仓库使用自定义 stages，在包�
   低权限分支（包括大小写归一后与 `main` 撞 slug 的 `Main`）写坏 main 的
   review state/pip cache。代价是同一项目不同 MR 的 pipeline 会排队，且默认不跨
   MR 复用 review/embedding cache。
+- GitLab CI cache **不是安全边界**：能修改 `.gitlab-ci.yml` 的人可以写任意 cache
+  key。`codereview` 的 cache 只在 MR pipeline 使用；`codereview-push-audit` 用
+  `cache: []` + `PIP_NO_CACHE_DIR=1`，不读取 MR 写入的 state/pip cache。agent
+  仓库自己的 `verify` 也不使用 GitLab cache。
 - `codereview` job 失败 → pipeline 失败。项目设置 **Merge requests → Merge checks
   → Pipelines must succeed** 即可作为合并门禁。GitLab Free 没有 GitHub 那种
   “按 job 名 required check”；需要更细的外部状态检查是 Ultimate 功能。
@@ -293,6 +301,8 @@ GITLAB_API_URL=https://gitlab.example.com/api/v4
 | `429` | GitLab API 限流；客户端按 `Retry-After`/`RateLimit-Reset` 退避。webhook 端 429 表示本地 IP 限流 |
 | `502 refusing cross-origin redirect/link` | GitLab API/分页返回了跨域 URL；检查实例/代理配置，不要放宽同源校验 |
 | CI 拿不到变量 | 变量是否 masked 且 **非 protected**；是否 fork MR；是否在正确项目/群组 |
+| `CODEREVIEW_AGENT_REF must be...` | 改成 `vX.Y.Z` 或完整 40 位 commit SHA；确实要用分支时显式设 `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true` |
+| `--base-url/GITLAB_BASE_URL must use https` | 用 HTTPS；只有 localhost/127.0.0.1/::1 允许明文 HTTP |
 | `include:project` 失败 | 触发用户对 agent 项目是否有 Reporter 权限 |
 | webhook 一直 401 | signing secret 是否配了但请求只带 legacy token（不会降级）；时间戳是否偏差 >300s |
 | webhook 被 GitLab 自动禁用 | 连续失败过多；在项目 webhook 页面重新启用并查服务日志 |

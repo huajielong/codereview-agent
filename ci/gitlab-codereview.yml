@@ -14,8 +14,10 @@
 #                                 cloning the private agent repository.
 #   OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL (+ optional COHERE_*).
 #
-# Pin include.ref and CODEREVIEW_AGENT_REF to the same tag. Running a mutable
-# branch requires CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true.
+# Pin include.ref and CODEREVIEW_AGENT_REF to the same tag or commit.
+# CODEREVIEW_AGENT_REF must be a version tag (vX.Y.Z) or a full 40-char commit
+# SHA. Running a mutable branch requires
+# CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true.
 #
 # The job is intentionally same-project-only. Fork MR pipelines run in the fork
 # project and cannot read the target project's variables; use the webhook
@@ -59,8 +61,9 @@ variables:
     REVIEW_POST_ON_PARTIAL: "false"
     GITLAB_ALLOW_TRUNCATED_DIFF: "$CODEREVIEW_ALLOW_TRUNCATED_DIFF"
   cache:
-    # Per-ref key: protected status + MR IID keep a branch whose slug collides
-    # with the default branch (e.g. Main -> main) from poisoning main's state.
+    # MR-only cache. GitLab CI cache is not a security boundary: an MR that
+    # controls .gitlab-ci.yml can write any key. The protected push-audit job
+    # below disables the cache and pip cache, so MR data cannot reach main.
     key: "codereview-state-$CI_PROJECT_ID-$CI_COMMIT_REF_SLUG-$CI_COMMIT_REF_PROTECTED-$CI_MERGE_REQUEST_IID"
     paths:
       - .codereview-state/
@@ -70,7 +73,8 @@ variables:
   before_script:
     - mkdir -p .codereview-state .cache/pip
     - if [ -z "$CODEREVIEW_AGENT_CLONE_TOKEN" ]; then echo "CODEREVIEW_AGENT_CLONE_TOKEN is required (read_repository deploy token)"; exit 1; fi
-    - case "$CODEREVIEW_AGENT_REF" in main|master) if [ "${CODEREVIEW_ALLOW_MUTABLE_AGENT_REF:-false}" != "true" ]; then echo "pin CODEREVIEW_AGENT_REF and include.ref to a tag"; exit 1; fi;; esac
+    - if ! git check-ref-format --branch "$CODEREVIEW_AGENT_REF" >/dev/null 2>&1; then echo "CODEREVIEW_AGENT_REF must be a single valid tag/SHA ref"; exit 1; fi
+    - if [ "${CODEREVIEW_ALLOW_MUTABLE_AGENT_REF:-false}" != "true" ]; then printf '%s' "$CODEREVIEW_AGENT_REF" | grep -Eq '^(v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?|[0-9a-fA-F]{40})$' || { echo "CODEREVIEW_AGENT_REF must be a version tag (vX.Y.Z) or a full 40-char commit SHA; set CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true to use a branch"; exit 1; }; fi
     - SERVER="${CI_SERVER_URL}"
     - SCHEME="${SERVER%%://*}"
     - SERVER="${SERVER#*://}"
@@ -96,8 +100,11 @@ codereview-push-audit:
   extends: .codereview_base
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  # Do not restore any cache into the protected default-branch job.
+  cache: []
   variables:
     REVIEW_DRY_RUN: "true"
+    PIP_NO_CACHE_DIR: "1"
   script:
     - python -I -X utf8 -m codereview.cli --provider gitlab --repo "$CI_PROJECT_PATH" --push --before "$CI_COMMIT_BEFORE_SHA" --after "$CI_COMMIT_SHA" --branch "$CI_COMMIT_BRANCH" --push-title "$CI_COMMIT_TITLE" --fail-on-severity high --json-out push-audit.json
   artifacts:
