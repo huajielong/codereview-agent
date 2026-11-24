@@ -4,15 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 这是什么
 
-`_labs/code_review` 是从 L6 抽取的、面向 **GitHub 与 GitLab** 的生产级代码评审
-agent。L5/L6 是课程实验；这里补的是上线必须的三件事：**接入**（GitHub App /
-GitLab token + webhook + 行级评论）、**缓存**（增量索引 + embedding + review
-cache）、**真实数据评测**（录制、shadow、P/R/F1）。
+本仓库（`codereview-agent`）是从 L6 抽取的、面向 **GitHub 与 GitLab** 的生产级
+代码评审 agent。L5/L6 是课程实验；这里补的是上线必须的三件事：**接入**
+（GitHub App / GitLab token + webhook + 行级评论）、**缓存**（增量索引 + embedding
++ review cache）、**真实数据评测**（录制、shadow、P/R/F1）。
 
 落地路径：
 
-- **GitHub Actions**：本仓库用 `.github/workflows/codereview.yml` 自审；目标仓库
-  复制/改写该 workflow，每个 PR 触发 CLI。
+- **GitHub Actions**：本仓库用 `.github/workflows/codereview.yml` 自审。它不是
+  目标仓库可直接复制的 `docs/` 模板；目标仓库需要自己的 workflow，并指定本仓库
+  作为 agent 源。
 - **GitLab CI**：目标仓库引入 `ci/gitlab-codereview.yml`（或复制
   `docs/gitlab-codereview.example.yml`），每个 MR pipeline 触发 CLI；不需要服务器。
 - **Webhook 服务**：`src/codereview/server/` 的 FastAPI + SQLite 持久队列 + worker +
@@ -23,7 +24,8 @@ cache）、**真实数据评测**（录制、shadow、P/R/F1）。
 
 ## 常用命令
 
-所有命令在 `_labs/code_review` 下执行。Python 统一 `python -I -X utf8`：`-I` 隔离 cwd/user site，`-X utf8` 保证中文输出。
+所有命令在仓库根目录下执行。Python 统一 `python -I -X utf8`：`-I` 隔离
+cwd/user site，`-X utf8` 保证中文输出。
 
 ### 安装
 
@@ -158,8 +160,13 @@ review-level 用真实模型，baseline 把 `REVIEW_CONTEXT_ENABLED` /
 
 ### 入口
 
-- CLI：`src/codereview/cli.py`（PR 模式 / push 模式）。
-- Webhook：`src/codereview/server/app.py` 的 `create_app`。lifespan 创建 `Database`、`Metrics`、`asyncio.Queue` 和 N 个 worker；`/webhook` 验签、写 `deliveries` 去重、解析 `pull_request`、过滤、写 `jobs`，返回 202；worker 用原子 `pending -> running` 抢 job，在线程里跑 `pipeline.review_pr`，回写 job 状态和 metrics；启动时把 SQLite 里残留的 pending job 重新入队。
+- CLI：`src/codereview/cli.py`（PR/MR 模式 / push 模式）。
+- Webhook：`src/codereview/server/app.py` 的 `create_app`。lifespan 创建 `Database`、
+  `Metrics`、`asyncio.Queue` 和 N 个 worker；`/webhook`（GitHub）和
+  `/webhook/gitlab`（GitLab）各自验签、写 `deliveries` 去重、解析事件、过滤、写
+  `jobs`，返回 202；worker 用原子 `pending -> running` 抢 job，在线程里跑
+  `pipeline.review_pr`，回写 job 状态和 metrics；启动时把 SQLite 里残留的 pending
+  job 重新入队。
 - 测试/脚本入口：`scripts/run_review.py`、`scripts/serve.py` 只是插 `src/` 的薄包装。
 
 ### Pipeline（`src/codereview/review/pipeline.py`）
@@ -175,7 +182,8 @@ review-level 用真实模型，baseline 把 `REVIEW_CONTEXT_ENABLED` /
 4. `chunk_diff` 按 `REVIEW_MAX_DIFF_CHARS` 切块；每块调 `Reviewer.review`，传入 context / task_context。
 5. findings 去重（精确 key，或 issue 文本 overlap > 0.6）、按 `REVIEW_MIN_SEVERITY` 过滤、排序、截断到 `REVIEW_MAX_FINDINGS`。
 6. 任一 chunk 的 LLM 调用报错且 `REVIEW_POST_ON_PARTIAL=false` → `completed_with_errors`，**不发布**。
-7. `Publisher.publish`：只对 diff 内行发 inline；其余进摘要；dry-run 或发 GitHub review；422 回退为摘要-only。
+7. `Publisher.publish`：只对 diff 内行发 inline；其余进摘要；dry-run 或发 GitHub
+   review / GitLab notes+discussions；GitHub 422 回退为摘要-only。
 8. 成功且非 dry-run 时写 history、review cache；`_finish` 写 `runs` 和 `audit.jsonl`。
 
 ### 模块职责
@@ -227,7 +235,7 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 
 - `review_exit_code()`：`failed` → 1；`--post` 且 `completed_with_errors` 且 `posted=false` → 2；其余 0。这是“check 绿但没 review”的防线，不要改回 0。
 - `REVIEW_POST_ON_PARTIAL=false` 默认 fail closed；部分 LLM 失败时整次不发布。
-- reasoning 模型 `finish_reason=length` 且正文为空时，`LLMClient` 用 4x budget（cap 64K）重试一次；Actions 里 `OPENAI_TIMEOUT=300`，job timeout 40 分钟。不要删掉这层重试或把 timeout 调回 120s。
+- reasoning 模型 `finish_reason=length` 且正文为空时，`LLMClient` 用 4x budget（cap 64K）重试一次；GitHub Actions 与 GitLab CI 模板都设 `OPENAI_TIMEOUT=300`，GitHub job timeout 40 分钟。不要删掉这层重试或把 timeout 调回 120s。
 
 ### 发布幂等
 
@@ -242,11 +250,27 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
 
 ### GitHub Actions
 
-- `docs/github-actions-codereview.yml`：PR 触发；checkout `huajielong/codereview-agent`（当前没有显式 ref，取默认分支）；安装；docs-only 检测；cache restore/save；上传 artifact；`--post`。默认 ensemble、draft、context、dependency、history、空摘要、`REVIEW_POST_ON_PARTIAL=false`，另有 `push` 到 main 的审计 job。
-- `docs/github-actions-codereview-state.yml`：`workflow_run` 伴生；只接受同仓库 PR；校验 SQLite 表和历史 JSON；用非取消 concurrency group 串行保存 main-scoped cache。PR cache 对兄弟 PR 不可见，没有它就无法跨 PR 复用 embedding/history。
-- required check 名是 job 名 `review`；branch protection 同时要求 conversation resolution。AI 评论必须人工 resolve。
-- **本地改完不会自动生效**：Actions 跑的是 `huajielong/codereview-agent` 的默认分支。要让线上用新代码，先推 agent 仓库；目标仓库的 workflow 是 `docs/` 里的副本。
-- `review_exit_code()` 让“没发布”变成红色 check；这是 2026-11-09 修掉的真实缺口，不要回退。
+- 实际文件是 `.github/workflows/codereview.yml`。仓库内**没有**
+  `docs/github-actions-codereview.yml` / `docs/github-actions-codereview-state.yml`，
+  也没有 artifact 上传或单独的 state workflow。
+- 触发：`pull_request`（opened/synchronize/reopened/ready_for_review）+ push `main`。
+- `review` job：同仓库 PR guard（fork PR 直接失败，因为拿不到 secrets）；从
+  `github.event.pull_request.base.sha` 检出 reviewer 代码到 `.codereview`；
+  Python 3.11；docs-only 检测；cache restore/save `data/codereview.db*` +
+  `data/history.jsonl`；运行
+  `python -m codereview.cli --repo "$REPO" --pr "$PR_NUMBER" --post`；security
+  模式；drafts/context/dependency/history 开启；空摘要开启；partial 不发布；
+  `REVIEW_MAX_DIFF_CHARS=30000`；timeout 40 分钟。
+- `push-audit` job：push `main`；checkout `github.sha`；`--push` dry-run；
+  `--fail-on-severity high`；JSON 写 step summary；不发布。
+- **Trust boundary**：workflow 定义来自 PR **merge commit**，reviewer 代码来自 PR
+  **base SHA**。因此 PR 里的 workflow 只能使用 base CLI 已支持的参数；新增 CLI
+  参数必须先合并到 `main`，否则自审 PR 会红。2026-11-24 的 PR #7 首次运行就因为
+  base CLI 不认识 `--provider github` 失败，已移除该参数。
+- 如果 GitHub 分支保护配置了 required check，名字是 job 名 `review`；branch
+  protection / conversation resolution 是 GitHub 设置，不在仓库文件里。
+- `review_exit_code()` 让“没发布”变成红色 check；这是 2026-11-09 修掉的真实缺口，
+  不要回退。
 
 ### GitLab
 
@@ -270,12 +294,21 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
   允许裸 `group/project` allowlist，GitHub 仍精确匹配。
 - CI 的 `resource_group` 按项目串行化，避免 SQLite/Chroma 并发；fork MR 的 CI 模式
   不支持，改用 webhook。
+- `scripts/gitlab_bootstrap.py`：幂等创建私有项目、`--push` 分支、创建
+  `read_repository` deploy token、写 masked CI 变量；不打印 secret。个人 namespace
+  创建时不能传 `namespace_id`（GitLab.com 会报 `organization_id` nil）。
+- **真机验证（2026-11-24）**：`huajielong/codereview-agent` MR !1 已合并，`main`
+  verify pipeline 成功；`huajielong/codereview-demo` MR !1 的 `codereview` job 成功，
+  首次 head 发布 summary + `app.py:6` inline discussion，重试 job 后 1/1 不变；
+  demo CI ref 切到 agent `main` 后产生新 head，MR 上共 2 轮 review（2/2），这是预期；
+  demo `main` 的 `codereview-push-audit` 成功。公网 webhook 未配置；本地签名 curl
+  已验证 202/401/401。
 
 ### 评测链路
 
 `evaluation/dataset.py` 读 JSONL；`evaluation/metrics.py` 做贪心一对一 issue 匹配、line 匹配、actionable rate、bootstrap CI；`evaluation/runner.py` 对每个 PR 调 `pipeline.review_diff`（永远 dry-run）。
 
-已记录的结论（`docs/VALIDATION.md`、`README.md`）：
+已记录的结论（`README.md`、`changlist/`）：
 
 - L6 15 个合成 PR：security + context + keyword F1 0.3478；hybrid 0.7667 主要是语义匹配口径，不是真实提升。
 - 真实人工 review 标签 n=3：issue P 0.6667 / R 0.2 / F1 0.3077；不能当 benchmark。
@@ -298,21 +331,22 @@ SQLite（`DATABASE_PATH`，默认 `data/codereview.db`）表：
     非 protected。`CI_JOB_TOKEN` 不能发 MR notes。
 12. **GitLab 截断/竞态默认 fail closed**：413（diff 截断）和 409（MR 已推进）不是
     可忽略的警告；不要改成继续发布半份评审。
-11. **指标口径**：默认 keyword；`--match hybrid` 必须同时报告 keyword-only。L6 出现过两种口径方向相反；不要只报 hybrid。
-12. **dependency/history 是增强，不是保证**：dependency 支持单仓库 Python import、C/C++ 本地 `#include "..."`、JS/TS 相对 import/require；C/C++ 不处理宏/条件编译，JS/TS 不处理 `tsconfig` 别名，跨语言 API 依赖不在范围内。history 是关键词重叠检索，从空开始，可能把模型引向旧问题。不要把它们写成“已验证提升准确率”。
-13. **Chroma 不可用时回退内存索引**（`factory._make_store`），这时跨进程不共享；日志里会有 `chroma_unavailable_fallback_memory`。
-14. **ensemble 没有对照评测**；`README.md` 和 `docs/VALIDATION.md` 的数字是单次运行/小样本，不要当 SLA。
+13. **指标口径**：默认 keyword；`--match hybrid` 必须同时报告 keyword-only。L6 出现过两种口径方向相反；不要只报 hybrid。
+14. **dependency/history 是增强，不是保证**：dependency 支持单仓库 Python import、C/C++ 本地 `#include "..."`、JS/TS 相对 import/require；C/C++ 不处理宏/条件编译，JS/TS 不处理 `tsconfig` 别名，跨语言 API 依赖不在范围内。history 是关键词重叠检索，从空开始，可能把模型引向旧问题。不要把它们写成“已验证提升准确率”。
+15. **Chroma 不可用时回退内存索引**（`factory._make_store`），这时跨进程不共享；日志里会有 `chroma_unavailable_fallback_memory`。
+16. **ensemble 没有对照评测**；`README.md` 和 `changlist/` 的数字是单次运行/小样本，不要当 SLA。
 
 ## 参考文档
 
-- `README.md`：完整功能、GitHub App 配置、缓存/发布/评测细节。
+仓库内实际存在的文档：
+
+- `README.md`：完整功能、GitHub App / GitLab 配置、缓存/发布/评测细节。
 - `docs/GITLAB.md`：GitLab token/CI/webhook、发布语义、截断与排错。
-- `docs/GITHUB-ACTIONS.md`：免服务器落地方案与 secrets（若仓库内不存在，以
-  `.github/workflows/codereview.yml` 为准）。
-- `docs/PRODUCTION.md`：GitHub App、shadow 上线、运维与排错（若仓库内不存在，
-  以 README/CLAUDE.md 为准）。
-- `docs/VALIDATION.md`：测试、缓存、真实发布、Actions 的验证记录（若仓库内不存在，
-  以 `tests/` 与 `README.md` 为准）。
-- `docs/L6-EXTRACTION.md`：L6 模块到生产模块的映射与行为差异。
 - `docs/MULTILANG-SPEC.md`：多语言 Phase 1/2 规格、TDD 顺序、评测口径与限制。
 - `prompts/README.md`：prompt override 占位符与目录规则。
+- `changlist/2026-11-10_multilang-context.md`：多语言改动记录。
+- `changlist/2026-11-24_gitlab-support.md`：GitLab 支持、真机验证与已知限制。
+
+早期文档 `docs/GITHUB-ACTIONS.md`、`docs/PRODUCTION.md`、`docs/VALIDATION.md`、
+`docs/L6-EXTRACTION.md` **未随本仓库发布**；不要把它们当作存在文件引用，相关事实
+以 `README.md`、`.github/workflows/codereview.yml`、`tests/` 和 `changlist/` 为准。

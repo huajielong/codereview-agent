@@ -6,7 +6,8 @@ diff，按 security / pattern / general / ensemble 模式调用 LLM，生成带 
 webhook 服务、GitHub Actions / GitLab CI 接入、仓库上下文检索、依赖图和缓存。
 相对 L6 notebook，这里补上了双平台接入、评论回写、缓存和可重复的多语言评测。
 
-当前状态：内部试点项目，未声明许可证。
+当前状态：内部试点项目；GitHub / GitLab 双平台已通过离线测试与真实 MR 验证
+（2026-11-24，见下方“验证状态”），未声明许可证。
 
 ## 快速开始
 
@@ -44,6 +45,21 @@ python -I -X utf8 -m pytest -q
 ```
 
 GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITLAB.md)。
+
+## 验证状态（2026-11-24）
+
+- 离线：79 个测试通过；`compileall`、wheel 构建通过。
+- GitHub：PR #7 的 `review` self-review check 在提交 `700ef7e` 上通过（16m42s）；
+  `push-audit` 在 PR 上按设计 skipped。本文档更新会触发一次新的 review check。
+- GitLab：`huajielong/codereview-agent` MR !1 已合并，`main` 的 verify pipeline
+  成功；`huajielong/codereview-demo` MR !1 的 `codereview` job 成功，发布了
+  summary note 与 `app.py:6` inline discussion；首次 head 重试同一 job 后
+  summary/inline 仍为 1/1。demo 的 CI ref 切到 agent `main` 后产生新 head，MR 上
+  现在共有 2 轮 review（2 summary / 2 inline），这是预期；demo `main` 的
+  `codereview-push-audit` 成功。
+- Webhook：本地 uvicorn + 签名 curl 验证正确签名 202、错误签名 401、配 signing
+  secret 后 legacy token 401；公网 webhook 未配置。
+- 上述 demo 仓库为 private；这些是内部验证，不是公开 benchmark。
 
 ## 架构
 
@@ -121,6 +137,12 @@ PAT 仅作为单仓库本地调试的降级方案（`GITHUB_TOKEN`）。
 `push` 到 `main` 时另有 `push-audit`。它不是一个可直接复制到任意目标仓库的
 通用模板；目标仓库需要自行提供 workflow，并指定本仓库作为 agent 源。
 
+注意 trusted-base 语义：workflow 定义来自 PR merge commit，但 reviewer 代码来自
+PR **base SHA**。因此 PR 里的 workflow 只能使用 base CLI 已支持的参数；本 PR 首次
+运行就因为 base CLI 不认识 `--provider github` 而失败，修复方式是移除该参数（CLI
+默认 provider 就是 github）。新增 CLI 参数时，必须先把该参数合并到 `main`，否则
+agent 自审 PR 会红。
+
 ### GitLab CI / Webhook
 
 两种方式：
@@ -134,9 +156,10 @@ PAT 仅作为单仓库本地调试的降级方案（`GITHUB_TOKEN`）。
    `https://<公网主机>/webhook/gitlab` 配成 Merge request webhook。
 
 完整的变量表、signing token 校验、fork MR 限制、缓存/配额和排错见
-[`docs/GITLAB.md`](docs/GITLAB.md)。GitLab 没有 GitHub Review 的原子对象：
-发布顺序是 inline discussion 先发、summary note 最后发，逐条带 marker 以支持
-崩溃后重试去重；summary 成功后才算发布完成。
+[`docs/GITLAB.md`](docs/GITLAB.md)。`scripts/gitlab_bootstrap.py` 可幂等创建私有
+项目、推送分支、创建 `read_repository` deploy token 并写入 masked CI 变量（不打印
+secret）。GitLab 没有 GitHub Review 的原子对象：发布顺序是 inline discussion 先发、
+summary note 最后发，逐条带 marker 以支持崩溃后重试去重；summary 成功后才算发布完成。
 
 ## 评审模式
 
@@ -291,6 +314,8 @@ general 还要 `{instructions}`），字面花括号写成 `{{` / `}}`。格式�
   fork MR 的 CI 模式不支持（拿不到目标项目变量），改用 webhook 服务。
 - GitLab 行内评论只支持新增行；旧侧/上下文行 finding 落 summary。GitLab 没有
   commit status / approval 回写；CI 用 job 退出码，webhook 用 MR note。
+- GitLab webhook 真机需要一个 GitLab 能访问的公网 HTTPS 地址；本仓库未配置，
+  目前只有本地 TestClient + 签名 curl 验证。
 - 没有 GitHub App manifest 自动注册；需要手动创建 App。GitLab 用 PAT / project /
   group access token，没有 GitHub App 等价物。
 - 没有多进程/多副本共享索引锁；同一 repo+ref 的并发建索引请把
