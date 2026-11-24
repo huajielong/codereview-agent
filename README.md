@@ -48,7 +48,7 @@ GitLab 的 CI 模板、webhook、token 和排错见 [`docs/GITLAB.md`](docs/GITL
 
 ## 验证状态（2026-11-24）
 
-- 离线：100 个测试通过；`compileall`、wheel 构建通过。
+- 离线：101 个测试通过；`compileall`、wheel 构建通过。
 - GitHub：PR #7 的 `review` self-review check 在提交 `700ef7e` 上通过（16m42s）；
   `push-audit` 在 PR 上按设计 skipped。本文档更新会触发一次新的 review check。
 - GitLab：`huajielong/codereview-agent` MR !1 已合并，`main` 的 verify pipeline
@@ -150,7 +150,8 @@ agent 自审 PR 会红。
 1. 目标仓库引入 `ci/gitlab-codereview.yml`（同 namespace/group，可用
    `include:project`），把 `include.ref` 和 `CODEREVIEW_AGENT_REF` 一起 pin 到
    同一个版本 tag（如 `v0.1.0`）或完整 40 位 commit SHA；使用分支需要显式
-   `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。配置 `CODEREVIEW_GITLAB_TOKEN`
+   `CODEREVIEW_ALLOW_MUTABLE_AGENT_REF=true`。clone 后会校验 HEAD：tag/SHA 必须是
+   detached HEAD，分支伪装成 `vX.Y.Z` 会被拒绝。配置 `CODEREVIEW_GITLAB_TOKEN`
    （**project access token**，`api` scope；不要在不可信项目里用个人 PAT）和
    `OPENAI_*` 变量；MR pipeline 会调用
    `python -m codereview.cli --provider gitlab ... --post`。私有 agent 仓库的

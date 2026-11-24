@@ -64,7 +64,24 @@ variables:
     - SERVER="${CI_SERVER_URL}"
     - SCHEME="${SERVER%%://*}"
     - SERVER="${SERVER#*://}"
-    - git -c 'credential.helper=!f() { test "$1" = get && printf "username=%s\npassword=%s\n" "${CODEREVIEW_AGENT_CLONE_USER:-oauth2}" "$CODEREVIEW_AGENT_CLONE_TOKEN"; }; f' clone --depth 1 --branch "$CODEREVIEW_AGENT_REF" "${SCHEME}://${SERVER}/${CODEREVIEW_AGENT_PATH}.git" .codereview-agent
+    - AGENT_URL="${SCHEME}://${SERVER}/${CODEREVIEW_AGENT_PATH}.git"
+    - CREDENTIAL_HELPER='!f() { test "$1" = get && printf "username=%s\npassword=%s\n" "${CODEREVIEW_AGENT_CLONE_USER:-oauth2}" "$CODEREVIEW_AGENT_CLONE_TOKEN"; }; f'
+    - rm -rf .codereview-agent
+    - |
+      if printf '%s' "$CODEREVIEW_AGENT_REF" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+        AGENT_SHA=$(printf '%s' "$CODEREVIEW_AGENT_REF" | tr 'A-F' 'a-f')
+        git init -q .codereview-agent
+        git -C .codereview-agent remote add origin "$AGENT_URL"
+        git -C .codereview-agent -c "credential.helper=$CREDENTIAL_HELPER" fetch --depth 1 origin "$AGENT_SHA"
+        if [ "$(git -C .codereview-agent rev-parse FETCH_HEAD)" != "$AGENT_SHA" ]; then
+          echo "CODEREVIEW_AGENT_REF did not resolve to the requested commit"
+          exit 1
+        fi
+        git -C .codereview-agent checkout -q --detach FETCH_HEAD
+      else
+        git -c "credential.helper=$CREDENTIAL_HELPER" clone --depth 1 --branch "$CODEREVIEW_AGENT_REF" "$AGENT_URL" .codereview-agent
+      fi
+    - if [ "${CODEREVIEW_ALLOW_MUTABLE_AGENT_REF:-false}" != "true" ] && git -C .codereview-agent symbolic-ref -q HEAD >/dev/null; then echo "CODEREVIEW_AGENT_REF resolved to a branch; pin a tag or commit"; exit 1; fi
     - python -m pip install -r .codereview-agent/requirements.txt
     - python -m pip install --no-deps -e .codereview-agent
 
